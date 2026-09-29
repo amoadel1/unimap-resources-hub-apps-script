@@ -9,6 +9,7 @@
   "main": "src/worker.js",
   "compatibility_date": "2025-09-01",
   "workers_dev": true,
+  "preview_urls": false,
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

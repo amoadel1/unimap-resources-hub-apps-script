@@ -40,7 +40,8 @@ let publicMemo = null; // { body: string, at: number }
 let publicInflight = null;
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, rawEnv, ctx) {
+    const env = cleanEnv(rawEnv);
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) {
       return env.ASSETS.fetch(request);
@@ -55,6 +56,15 @@ export default {
     return secureHeaders(response);
   }
 };
+
+/** Secrets pasted into a terminal can pick up stray whitespace/newlines — normalise them once. */
+function cleanEnv(env) {
+  const out = Object.create(env);
+  for (const k of ['GAS_API_URL', 'GAS_PROXY_SECRET', 'IP_HASH_SECRET', 'GAS_REDIRECT_HOST', 'DEV_BACKEND']) {
+    if (typeof env[k] === 'string') Object.defineProperty(out, k, { value: env[k].trim() });
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------- Routing
 
