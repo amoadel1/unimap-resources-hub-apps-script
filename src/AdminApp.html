@@ -1,0 +1,302 @@
+<script>
+/* ==========================================================================
+   AdminApp.html — dashboard core: session, server calls, state, shell, routing.
+   Role checks here only decide what to SHOW. The server re-checks every call.
+   ========================================================================== */
+window.AdminViews = window.AdminViews || {};
+window.AdminForms = window.AdminForms || {};
+window.AdminApp = (function () {
+  'use strict';
+  var html = UI.html, icon = UI.icon, $ = UI.$, $$ = UI.$$, setHtml = UI.setHtml;
+  var APP_URL = window.__APP_URL__ || '';
+  var SITE_NAME = window.__SITE_NAME__ || 'UniMAP Resources Hub';
+  var TOKEN_KEY = 'urh_admin_token';
+  var ROLE_RANK = { reviewer: 1, admin: 2, owner: 3 };
+
+  var S = {
+    token: null, me: null, data: null, view: 'overview', params: {},
+    navOpen: false, loginError: '', loading: false,
+    f: {
+      submissions: { tab: 'pending', q: '' },
+      resources: { q: '', programme: '', platform: '', status: '', type: '' },
+      programmes: { q: '', status: '' },
+      activity: { q: '', type: '' }
+    },
+    selected: {}, limits: { resources: 60, submissions: 60, activity: 100 }
+  };
+
+  var NAV = [
+    { grp: 'Overview' },
+    { id: 'overview', label: 'Dashboard', icon: 'grid', role: 'reviewer' },
+    { grp: 'Content' },
+    { id: 'submissions', label: 'Submissions', icon: 'inbox', role: 'reviewer', count: function () { return pendingCount(); } },
+    { id: 'resources', label: 'Resources', icon: 'folder', role: 'reviewer' },
+    { id: 'programmes', label: 'Programmes', icon: 'book', role: 'reviewer' },
+    { id: 'collections', label: 'Official collections', icon: 'layers', role: 'reviewer' },
+    { id: 'platforms', label: 'Platforms', icon: 'link', role: 'reviewer' },
+    { grp: 'Administration' },
+    { id: 'admins', label: 'Admins', icon: 'users', role: 'owner' },
+    { id: 'settings', label: 'Settings', icon: 'settings', role: 'reviewer' },
+    { id: 'activity', label: 'Activity log', icon: 'clock', role: 'reviewer' },
+    { grp: 'Account' },
+    { id: 'account', label: 'My account', icon: 'user', role: 'reviewer' }
+  ];
+
+  function can(role) { return !!S.me && (ROLE_RANK[S.me.role] || 0) >= (ROLE_RANK[role] || 99); }
+  function pendingCount() { return S.data ? S.data.submissions.filter(function (s) { return s.status === 'pending'; }).length : 0; }
+
+  // ------------------------------------------------------------------ Server calls
+  function mkErr(code, message, field) { var e = new Error(message || code); e.code = code; e.field = field || null; return e; }
+
+  /** Calls adminApi and applies the returned change-set to local state. */
+  function call(action, payload) {
+    return UI.rpc('adminApi', S.token, action, payload || {}).then(function (res) {
+      if (!res) throw mkErr('SERVER_ERROR', 'No response from the server.');
+      if (res.ok) { applyDelta(res.delta); return res.data; }
+      var e = res.error || {};
+      if (e.code === 'AUTH_REQUIRED') signedOut(e.message);
+      else if (e.code === 'PASSWORD_CHANGE_REQUIRED' && S.me) { S.me.must_change_password = true; render(); }
+      throw mkErr(e.code, e.message, e.field);
+    }, function () {
+      throw mkErr('OFFLINE', 'Could not reach the server. Check your connection and try again.');
+    });
+  }
+
+  var TABLE_KEYS = { Programmes: 'programmes', Resources: 'resources', Submissions: 'submissions', Categories: 'categories', Platforms: 'platforms', Admins: 'admins', ActivityLog: 'activity' };
+  function applyDelta(delta) {
+    if (!delta || !S.data) return;
+    Object.keys(delta.upsert || {}).forEach(function (table) {
+      var key = TABLE_KEYS[table]; if (!key) return;
+      var list = S.data[key];
+      (delta.upsert[table] || []).forEach(function (obj) {
+        for (var i = 0; i < list.length; i++) { if (list[i].id === obj.id) { list[i] = obj; return; } }
+        if (key === 'activity' || key === 'submissions') list.unshift(obj); else list.push(obj);
+        if (table === 'Admins' && S.me && obj.id === S.me.id) S.me = obj;
+      });
+      if (table === 'Admins' && S.me) { var me = list.filter(function (a) { return a.id === S.me.id; })[0]; if (me) S.me = me; }
+    });
+    Object.keys(delta.remove || {}).forEach(function (table) {
+      var key = TABLE_KEYS[table]; if (!key) return;
+      var gone = {};
+      delta.remove[table].forEach(function (id) { gone[id] = 1; });
+      S.data[key] = S.data[key].filter(function (o) { return !gone[o.id]; });
+    });
+  }
+
+  function signedOut(message) {
+    UI.session.remove(TOKEN_KEY);
+    S.token = null; S.me = null; S.data = null;
+    S.loginError = message || '';
+    document.querySelectorAll('.overlay').forEach(function (o) { o.remove(); });
+    document.body.classList.remove('no-scroll');
+    render();
+  }
+
+  function logout() {
+    var t = S.token;
+    if (t) UI.rpc('adminLogout', t).catch(function () {});
+    signedOut('You have signed out.');
+  }
+
+  function bootstrap() {
+    S.loading = true; render();
+    return call('bootstrap').then(function (data) {
+      S.data = data; S.me = data.me; S.loading = false; render();
+    }).catch(function (e) {
+      S.loading = false;
+      if (e.code !== 'AUTH_REQUIRED' && e.code !== 'PASSWORD_CHANGE_REQUIRED') {
+        S.loadError = e.message; render();
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ Lookups & formatting
+  function byId(list, id) { if (!id || !S.data) return null; for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]; return null; }
+  function progName(id) { var p = byId(S.data.programmes, id); return p ? p.name : (id ? 'Deleted programme' : ''); }
+  function catName(id) { var c = byId(S.data.categories, id); return c ? c.name : (id ? 'Deleted collection' : ''); }
+  function publicUrl(params) {
+    var qs = Object.keys(params || {}).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); }).join('&');
+    return (APP_URL || '') + (qs ? '?' + qs : '');
+  }
+  function statusBadge(active) {
+    return active ? html`<span class="badge badge-ok"><span class="dot"></span>Active</span>` : html`<span class="badge"><span class="dot"></span>Inactive</span>`;
+  }
+  function when(iso) { return iso ? html`<span title="${UI.fmtDate(iso, 'en', true)}">${UI.timeAgo(iso)}</span>` : '—'; }
+
+  // ------------------------------------------------------------------ Routing
+  function setView(view, params, opts) {
+    opts = opts || {};
+    S.view = view; S.params = params || {}; S.navOpen = false; S.selected = {};
+    try { google.script.history[opts.replace ? 'replace' : 'push']({ v: view }, { p: 'admin', v: view }); } catch (e) {}
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  // ------------------------------------------------------------------ Rendering
+  function render() {
+    var app = $('#app');
+    document.documentElement.lang = 'en'; document.documentElement.dir = 'ltr';
+    if (!S.token) { setHtml(app, viewLogin()); mountLogin(); return; }
+    if (S.me && S.me.must_change_password) { setHtml(app, viewForcePassword()); mountForcePassword(); return; }
+    if (!S.data) {
+      setHtml(app, S.loadError
+        ? html`<div class="auth-wrap"><div class="card card-pad auth-card" style="text-align:center"><h1>Could not load the dashboard</h1><p class="muted" style="margin-top:8px">${S.loadError}</p>
+            <button class="btn btn-primary" style="margin-top:18px" data-act="retry">${icon('refresh', 'icon-sm')}Retry</button></div></div>`
+        : html`<div class="auth-wrap"><div style="display:grid;justify-items:center;gap:14px;color:var(--text-3)"><div class="spinner" style="width:28px;height:28px"></div><span class="small">Loading dashboard…</span></div></div>`);
+      var r = $('[data-act="retry"]'); if (r) r.onclick = function () { S.loadError = ''; bootstrap(); };
+      return;
+    }
+    var views = window.AdminViews;
+    var nav = NAV.filter(function (n) { return n.grp || can(n.role); });
+    if (!views[S.view] || !can(NAV.filter(function (n) { return n.id === S.view; })[0].role)) S.view = 'overview';
+    var current = NAV.filter(function (n) { return n.id === S.view; })[0];
+    setHtml(app, html`<div class="admin-shell">
+      <aside class="side ${S.navOpen ? 'open' : ''}" id="side" aria-label="Dashboard navigation">
+        <div class="side-brand"><span class="brand-mark">UR</span><span class="brand-text"><span class="brand-name">${SITE_NAME}</span><span class="brand-tag">Admin dashboard</span></span></div>
+        <nav class="side-nav">
+          ${nav.map(function (n, i) {
+            if (n.grp) return nav[i + 1] && !nav[i + 1].grp ? html`<div class="grp">${n.grp}</div>` : '';
+            var c = n.count ? n.count() : 0;
+            return html`<a href="${publicUrl({ p: 'admin', v: n.id })}" data-view="${n.id}" ${UI.raw(S.view === n.id ? 'aria-current="page"' : '')}>${icon(n.icon)}<span>${n.label}</span>${c ? html`<span class="count">${c}</span>` : ''}</a>`;
+          })}
+        </nav>
+        <div class="side-foot">
+          <span class="avatar" style="width:36px;height:36px;font-size:.8125rem">${initials(S.me.name || S.me.email)}</span>
+          <div class="who"><p class="small" style="font-weight:600">${S.me.name}</p><p class="xsmall subtle">${S.me.role}</p></div>
+          <a class="btn btn-ghost btn-icon btn-sm" href="${publicUrl({})}" target="_blank" rel="noopener" title="Open public site" aria-label="Open public site">${icon('external', 'icon-sm')}</a>
+          <button class="btn btn-ghost btn-icon btn-sm" data-act="logout" title="Sign out" aria-label="Sign out">${icon('logout', 'icon-sm')}</button>
+        </div>
+      </aside>
+      ${S.navOpen ? html`<div class="side-scrim" data-act="close-nav"></div>` : ''}
+      <div class="main">
+        <header class="topbar">
+          <button class="btn btn-ghost btn-icon" data-act="open-nav" aria-label="Open menu" aria-controls="side" aria-expanded="${String(S.navOpen)}">${icon('menu')}</button>
+          <h1>${current ? current.label : ''}</h1>
+          ${pendingCount() ? html`<a class="badge badge-accent" href="#" data-view="submissions">${pendingCount()} pending</a>` : ''}
+        </header>
+        <div class="page" id="page">${views[S.view].render(ctx)}</div>
+      </div>
+    </div>`);
+    document.title = (current ? current.label + ' — ' : '') + SITE_NAME + ' Admin';
+    if (views[S.view].mount) views[S.view].mount(ctx);
+  }
+
+  /** Re-renders only the page area (keeps sidebar & scroll position). */
+  function renderPage() {
+    var page = $('#page');
+    if (!page || !S.data) { render(); return; }
+    var views = window.AdminViews;
+    setHtml(page, views[S.view].render(ctx));
+    if (views[S.view].mount) views[S.view].mount(ctx);
+    // keep sidebar badge in sync
+    var link = $('.side-nav a[data-view="submissions"]');
+    if (link) {
+      var n = pendingCount(), c = $('.count', link);
+      if (n && !c) { c = document.createElement('span'); c.className = 'count'; link.appendChild(c); }
+      if (c) { if (n) c.textContent = n; else c.remove(); }
+    }
+  }
+
+  function initials(name) {
+    var parts = String(name || '').trim().split(/[\s@.]+/);
+    return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || 'A';
+  }
+
+  // ------------------------------------------------------------------ Login
+  function viewLogin() {
+    return html`<div class="auth-wrap"><form class="card card-pad auth-card" id="login-form" novalidate>
+      <span class="brand-mark">UR</span>
+      <h1>Admin sign in</h1>
+      <p class="muted small" style="margin-top:6px">${SITE_NAME} — dashboard for approved admins only.</p>
+      ${S.loginError ? html`<div class="notice ${/signed out/i.test(S.loginError) ? '' : 'notice-danger'}" role="alert" style="margin-top:18px">${icon('info')}<span>${S.loginError}</span></div>` : ''}
+      <div class="field" style="margin-top:20px"><label class="label" for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="username" inputmode="email" required autofocus></div>
+      <div class="field"><label class="label" for="password">Password</label>
+        <div style="position:relative"><input class="input" id="password" name="password" type="password" autocomplete="current-password" required style="padding-inline-end:48px">
+        <button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="toggle-pw" aria-label="Show password" style="position:absolute;inset-inline-end:6px;top:6px">${icon('eye', 'icon-sm')}</button></div></div>
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top:22px;min-height:48px">Sign in</button>
+      <p class="xsmall subtle" style="margin-top:16px;text-align:center"><a href="${publicUrl({})}" target="_top">← Back to the public site</a></p>
+    </form></div>`;
+  }
+  function mountLogin() {
+    var form = $('#login-form');
+    $('[data-act="toggle-pw"]').onclick = function () { var p = $('#password'); p.type = p.type === 'password' ? 'text' : 'password'; };
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      var email = form.email.value.trim(), pw = form.password.value;
+      if (!email || !pw) { S.loginError = 'Enter your email and password.'; render(); return; }
+      var btn = $('button[type="submit"]', form);
+      UI.setBusy(btn, true, 'Signing in…');
+      UI.rpc('adminLogin', email, pw).then(function (res) {
+        if (!res || !res.ok) {
+          S.loginError = (res && res.error && res.error.message) || 'Sign in failed.';
+          render(); var f = $('#email'); if (f) f.value = email; var p = $('#password'); if (p) p.focus();
+          return;
+        }
+        S.token = res.data.token; S.me = res.data.admin; S.loginError = '';
+        UI.session.set(TOKEN_KEY, S.token);
+        if (S.me.must_change_password) render(); else bootstrap();
+      }).catch(function () { S.loginError = 'Could not reach the server. Check your connection.'; render(); });
+    };
+  }
+
+  function viewForcePassword() {
+    return html`<div class="auth-wrap"><form class="card card-pad auth-card" id="pw-form" novalidate>
+      <span class="brand-mark">UR</span>
+      <h1>Choose a new password</h1>
+      <p class="muted small" style="margin-top:6px">Signed in as <strong>${S.me.email}</strong>. You are using a temporary password — please set your own before continuing.</p>
+      <div id="pw-error"></div>
+      ${AdminForms.passwordFields ? AdminForms.passwordFields() : ''}
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top:22px;min-height:48px">Save password</button>
+      <button type="button" class="btn btn-ghost btn-block" style="margin-top:8px" data-act="logout">Sign out</button>
+    </form></div>`;
+  }
+  function mountForcePassword() {
+    var form = $('#pw-form');
+    $('[data-act="logout"]', form).onclick = logout;
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      AdminForms.submitPasswordChange(ctx, form, function () { bootstrap(); });
+    };
+  }
+
+  // ------------------------------------------------------------------ Global events
+  function onClick(e) {
+    var v = e.target.closest('[data-view]');
+    if (v && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); setView(v.getAttribute('data-view')); return; }
+    var a = e.target.closest('[data-act]');
+    if (!a) return;
+    switch (a.getAttribute('data-act')) {
+      case 'logout': logout(); break;
+      case 'open-nav': S.navOpen = true; render(); setTimeout(function () { var f = $('.side-nav a'); if (f) f.focus(); }, 50); break;
+      case 'close-nav': S.navOpen = false; render(); break;
+    }
+  }
+
+  var ctx = {
+    S: S, call: call, can: can, setView: setView, render: render, renderPage: renderPage,
+    byId: byId, progName: progName, catName: catName, publicUrl: publicUrl,
+    statusBadge: statusBadge, when: when, initials: initials, pendingCount: pendingCount
+  };
+
+  function start() {
+    document.addEventListener('click', onClick);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && S.navOpen) { S.navOpen = false; render(); } });
+    try {
+      google.script.history.setChangeHandler(function (ev) {
+        var v = (ev && ev.state && ev.state.v) || (ev && ev.location && ev.location.parameter && ev.location.parameter.v) || 'overview';
+        S.view = v; S.selected = {}; render();
+      });
+    } catch (e) {}
+    var begin = function (v) {
+      if (v && /^[a-z]+$/.test(v)) S.view = v;
+      S.token = UI.session.get(TOKEN_KEY);
+      if (S.token) bootstrap(); else render();
+    };
+    try { google.script.url.getLocation(function (loc) { begin(loc && loc.parameter && loc.parameter.v); }); }
+    catch (e) { begin(null); }
+  }
+
+  return { start: start, ctx: ctx };
+})();
+</script>

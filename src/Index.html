@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="description" content="An independent student initiative that organises academic resources shared by UniMAP students. By Students, For Students.">
+  <script>
+    // Apply saved theme before first paint (storage may be unavailable — that's fine).
+    try { var th = localStorage.getItem('urh_theme'); if (th === 'dark' || th === 'light') document.documentElement.setAttribute('data-theme', th); } catch (e) {}
+  </script>
+  <?!= include_('Styles'); ?>
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+  <div id="app">
+    <div class="container" style="padding-block:96px">
+      <div class="skeleton" style="height:28px;width:180px"></div>
+      <div class="skeleton" style="height:56px;max-width:560px;margin-top:20px"></div>
+      <div class="skeleton" style="height:20px;max-width:640px;margin-top:20px"></div>
+      <div class="skeleton" style="height:52px;max-width:720px;margin-top:36px;border-radius:999px"></div>
+    </div>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script>
+    window.__BOOT__ = <?!= bootJson ?>;
+    window.__ROUTE__ = <?!= routeJson ?>;
+    window.__APP_URL__ = <?!= safeJson_(appUrl) ?>;
+  </script>
+  <?!= include_('Ui'); ?>
+  <?!= include_('I18n'); ?>
+  <?!= include_('PublicApp'); ?>
+  <?!= include_('PublicSubmit'); ?>
+  <script>PublicApp.start();</script>
+</body>
+</html>

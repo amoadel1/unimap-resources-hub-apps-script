@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex, nofollow">
+  <script>
+    try { var th = localStorage.getItem('urh_theme'); if (th === 'dark' || th === 'light') document.documentElement.setAttribute('data-theme', th); } catch (e) {}
+  </script>
+  <?!= include_('Styles'); ?>
+  <?!= include_('AdminStyles'); ?>
+</head>
+<body class="admin">
+  <div id="app">
+    <div class="auth-wrap"><div class="spinner" aria-label="Loading" style="width:28px;height:28px;color:var(--text-3)"></div></div>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script>
+    window.__APP_URL__ = <?!= safeJson_(appUrl) ?>;
+    window.__SITE_NAME__ = <?!= safeJson_(siteName) ?>;
+  </script>
+  <?!= include_('Ui'); ?>
+  <?!= include_('AdminApp'); ?>
+  <?!= include_('AdminViews'); ?>
+  <?!= include_('AdminForms'); ?>
+  <script>AdminApp.start();</script>
+</body>
+</html>

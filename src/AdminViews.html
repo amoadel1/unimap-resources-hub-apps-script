@@ -1,0 +1,607 @@
+<script>
+/* ==========================================================================
+   AdminViews.html — dashboard pages.
+   Each view: render(ctx) returns SafeHtml; mount(ctx) wires events.
+   ========================================================================== */
+(function () {
+  'use strict';
+  var html = UI.html, raw = UI.raw, icon = UI.icon, $ = UI.$, $$ = UI.$$, setHtml = UI.setHtml, norm = UI.norm;
+  var V = window.AdminViews, F = window.AdminForms;
+
+  function pageTitle(title, sub, actions) {
+    return html`<div class="page-title"><div><h2>${title}</h2>${sub ? html`<p>${sub}</p>` : ''}</div>${actions ? html`<div class="actions">${actions}</div>` : ''}</div>`;
+  }
+  function searchInput(id, value, placeholder) {
+    return html`<div class="search-box">${icon('search')}<label class="sr-only" for="${id}">${placeholder}</label>
+      <input id="${id}" class="input" type="search" autocomplete="off" placeholder="${placeholder}" value="${value}"></div>`;
+  }
+  function sel(id, value, options, label) {
+    return html`<label class="sr-only" for="${id}">${label}</label><select id="${id}" class="select">${options.map(function (o) {
+      return html`<option value="${o.v}" ${String(o.v) === String(value) ? 'selected' : ''}>${o.l}</option>`;
+    })}</select>`;
+  }
+  function empty(title, text, action) {
+    return html`<div class="empty"><h3>${title}</h3>${text ? html`<p>${text}</p>` : ''}${action || ''}</div>`;
+  }
+  function iconBtn(act, id, ic, label, extraCls) {
+    return html`<button type="button" class="btn btn-ghost btn-icon btn-sm ${extraCls || ''}" data-a="${act}" data-id="${id}" title="${label}" aria-label="${label}">${icon(ic, 'icon-sm')}</button>`;
+  }
+  function matches(text, q) {
+    var terms = norm(q).split(' ').filter(Boolean);
+    var t = norm(text);
+    for (var i = 0; i < terms.length; i++) if (t.indexOf(terms[i]) === -1) return false;
+    return true;
+  }
+  function onInputDebounced(el, fn) { if (el) el.addEventListener('input', UI.debounce(fn, 150)); }
+  function toggleActive(ctx, action, item, label) {
+    return ctx.call(action, { id: item.id, is_active: !item.is_active })
+      .then(function () { UI.toast(label + (item.is_active ? ' hidden' : ' visible')); ctx.renderPage(); })
+      .catch(function (e) { UI.toast(e.message, 'error'); });
+  }
+  function del(ctx, action, item, what, name) {
+    return F.confirmThen({ title: 'Delete ' + what + '?', message: '“' + name + '” will be permanently deleted. This cannot be undone.', confirmText: 'Delete', danger: true },
+      function () {
+        return ctx.call(action, { id: item.id }).then(function () { UI.toast(what.charAt(0).toUpperCase() + what.slice(1) + ' deleted'); ctx.renderPage(); })
+          .catch(function (e) { UI.toast(e.message, 'error'); });
+      });
+  }
+  function reorder(ctx, action, list, id, dir) {
+    var ids = list.map(function (x) { return x.id; });
+    var i = ids.indexOf(id), j = i + dir;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    ids[i] = ids[j]; ids[j] = id;
+    return ctx.call(action, { ids: ids }).then(function () { ctx.renderPage(); }).catch(function (e) { UI.toast(e.message, 'error'); });
+  }
+  function bySort(a, b) { return (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)); }
+  function activityIcon(action) {
+    var k = String(action).split('.')[0];
+    return { auth: 'key', submission: 'inbox', resource: 'folder', programme: 'book', category: 'layers', platform: 'link', admin: 'users', settings: 'settings', system: 'shield' }[k] || 'clock';
+  }
+  function activityItem(a) {
+    return html`<div class="feed-item"><span class="ic">${icon(activityIcon(a.action), 'icon-sm')}</span>
+      <div class="body"><div><strong>${a.action}</strong> <span class="muted" dir="auto">${a.details}</span></div>
+      <div class="meta">${a.admin_email} · ${UI.fmtDate(a.timestamp, 'en', true)}</div></div></div>`;
+  }
+
+  // ======================================================================= Overview
+  V.overview = {
+    render: function (ctx) {
+      var d = ctx.S.data;
+      var pending = d.submissions.filter(function (s) { return s.status === 'pending'; });
+      var activeRes = d.resources.filter(function (r) { return r.is_active; });
+      var approved = Math.max(d.submission_totals.approved, d.submissions.filter(function (s) { return s.status === 'approved'; }).length);
+      var stats = [
+        { v: pending.length, l: 'Pending submissions', view: 'submissions', hot: pending.length > 0 },
+        { v: activeRes.filter(function (r) { return !r.is_official; }).length, l: 'Student resources (visible)', view: 'resources' },
+        { v: activeRes.filter(function (r) { return r.is_official; }).length, l: 'Official links (visible)', view: 'resources' },
+        { v: d.programmes.filter(function (p) { return p.is_active; }).length + ' / ' + d.programmes.length, l: 'Programmes active', view: 'programmes' },
+        { v: approved, l: 'Approved submissions', view: 'submissions' },
+        ctx.can('owner')
+          ? { v: d.admins.filter(function (a) { return a.is_active; }).length, l: 'Active admins', view: 'admins' }
+          : { v: d.categories.length, l: 'Official collections', view: 'collections' }
+      ];
+      return html`
+        ${pageTitle('Dashboard', 'Signed in as ' + (ctx.S.me.name || ctx.S.me.email) + ' · ' + ctx.S.me.role,
+          ctx.can('admin') ? html`<button class="btn btn-secondary btn-sm" data-a="add-programme">${icon('plus', 'icon-sm')}Programme</button>
+            <button class="btn btn-primary btn-sm" data-a="add-resource">${icon('plus', 'icon-sm')}Resource</button>` : '')}
+        <div class="stats">${stats.map(function (s) {
+          return html`<a class="stat ${s.hot ? 'hot' : ''}" href="#" data-view="${s.view}"><div class="v">${s.v}</div><div class="l">${s.l}</div></a>`;
+        })}</div>
+        <div class="two-col">
+          <section class="card">
+            <div class="panel-head"><h3>Pending review</h3><a href="#" data-view="submissions" class="small">View all</a></div>
+            ${pending.length ? html`<div class="feed">${pending.slice(0, 6).map(function (s) {
+              return html`<button type="button" class="feed-item" data-a="review" data-id="${s.id}"><span class="ic">${icon('inbox', 'icon-sm')}</span>
+                <span class="body"><span style="display:block;font-weight:600" dir="auto">${s.full_name}</span>
+                <span class="meta" style="display:block">${s.resource_type === 'official' ? 'Official link' : ctx.progName(s.programme_id) + ' · ' + s.intake} · ${s.platform} · ${UI.timeAgo(s.submitted_at)}</span></span>
+                ${icon('arrow', 'icon-sm')}</button>`;
+            })}</div>` : empty('All caught up', 'No submissions are waiting for review.')}
+          </section>
+          <section class="card">
+            <div class="panel-head"><h3>Recent activity</h3><a href="#" data-view="activity" class="small">View log</a></div>
+            ${d.activity.length ? html`<div class="feed">${d.activity.slice(0, 8).map(activityItem)}</div>` : empty('No activity yet')}
+          </section>
+        </div>
+        <section class="card card-pad" style="margin-top:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+          <div><h3 style="font-size:1rem">Public website</h3><p class="muted small" style="margin-top:4px">Changes you make here appear on the site immediately.</p></div>
+          <a class="btn btn-secondary btn-sm" href="${ctx.publicUrl({})}" target="_blank" rel="noopener">${icon('external', 'icon-sm')}Open public site</a>
+        </section>`;
+    },
+    mount: function (ctx) {
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b) return;
+        var a = b.getAttribute('data-a');
+        if (a === 'add-resource') F.openResourceForm(ctx, null);
+        if (a === 'add-programme') F.openProgrammeForm(ctx, null);
+        if (a === 'review') F.openSubmissionReview(ctx, ctx.byId(ctx.S.data.submissions, b.getAttribute('data-id')));
+      };
+    }
+  };
+
+  // ======================================================================= Submissions
+  V.submissions = {
+    list: function (ctx) {
+      var f = ctx.S.f.submissions;
+      return ctx.S.data.submissions.filter(function (s) {
+        if (f.tab !== 'all' && s.status !== f.tab) return false;
+        if (!f.q) return true;
+        return matches([s.full_name, s.resource_url, s.notes, s.intake, s.platform, ctx.progName(s.programme_id), s.admin_notes, s.reviewed_by].join(' '), f.q);
+      }).sort(function (a, b) {
+        return f.tab === 'pending' ? String(a.submitted_at).localeCompare(String(b.submitted_at)) : String(b.submitted_at).localeCompare(String(a.submitted_at));
+      });
+    },
+    table: function (ctx) {
+      var rows = this.list(ctx);
+      var limit = ctx.S.limits.submissions;
+      if (!rows.length) return html`<div class="dt-wrap">${empty(ctx.S.f.submissions.tab === 'pending' ? 'No pending submissions' : 'Nothing here', ctx.S.f.submissions.q ? 'Try a different search.' : '')}</div>`;
+      return html`<div class="dt-wrap"><table class="dt">
+        <thead><tr><th>Submitted by</th><th>Programme</th><th>Platform</th><th>Submitted</th><th>Status</th><th></th></tr></thead>
+        <tbody>${rows.slice(0, limit).map(function (s) {
+          var badge = s.status === 'pending' ? html`<span class="badge badge-warn">Pending</span>` : s.status === 'approved' ? html`<span class="badge badge-ok">Approved</span>` : html`<span class="badge badge-danger">Rejected</span>`;
+          return html`<tr>
+            <td class="primary"><div class="t-main" dir="auto">${s.full_name}</div><div class="t-sub ltr break">${UI.hostOf(s.resource_url)}</div></td>
+            <td data-label="Programme">${s.resource_type === 'official' ? html`<span class="badge badge-accent">Official</span>` : html`${ctx.progName(s.programme_id)} <span class="subtle">· ${s.intake}</span>`}</td>
+            <td data-label="Platform">${s.platform}</td>
+            <td data-label="Submitted">${ctx.when(s.submitted_at)}</td>
+            <td data-label="Status">${badge}</td>
+            <td><div class="row-actions"><button class="btn ${s.status === 'pending' ? 'btn-primary' : 'btn-secondary'} btn-xs" data-a="review" data-id="${s.id}">${s.status === 'pending' ? 'Review' : 'Details'}</button></div></td>
+          </tr>`;
+        })}</tbody></table>
+        ${rows.length > limit ? html`<div class="more-row"><button class="btn btn-secondary btn-sm" data-a="more">Show more (${rows.length - limit})</button></div>` : ''}</div>`;
+    },
+    render: function (ctx) {
+      var f = ctx.S.f.submissions, d = ctx.S.data;
+      var counts = { pending: 0, approved: 0, rejected: 0, all: d.submissions.length };
+      d.submissions.forEach(function (s) { counts[s.status] = (counts[s.status] || 0) + 1; });
+      var tabs = [['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['all', 'All']];
+      return html`${pageTitle('Submissions', 'Review links submitted by students. Approving publishes the link under the chosen programme.')}
+        <div class="tabs" role="tablist">${tabs.map(function (t) {
+          return html`<button role="tab" data-tab="${t[0]}" aria-selected="${String(f.tab === t[0])}">${t[1]}<span class="n">${counts[t[0]] || 0}</span></button>`;
+        })}</div>
+        <div class="filters">${searchInput('sub-q', f.q, 'Search name, link, programme, notes…')}</div>
+        <div id="sub-table">${this.table(ctx)}</div>`;
+    },
+    mount: function (ctx) {
+      var self = this, f = ctx.S.f.submissions;
+      onInputDebounced($('#sub-q'), function (e) { f.q = e.target.value; ctx.S.limits.submissions = 60; setHtml($('#sub-table'), self.table(ctx)); });
+      $('#page').onclick = function (e) {
+        var t = e.target.closest('[data-tab]');
+        if (t) { f.tab = t.getAttribute('data-tab'); ctx.S.limits.submissions = 60; ctx.renderPage(); return; }
+        var b = e.target.closest('[data-a]');
+        if (b && b.getAttribute('data-a') === 'more') { ctx.S.limits.submissions += 60; setHtml($('#sub-table'), self.table(ctx)); return; }
+        var row = e.target.closest('[data-a="review"]') || (e.target.closest('tr') && $('[data-a="review"]', e.target.closest('tr')));
+        if (row && !e.target.closest('a')) F.openSubmissionReview(ctx, ctx.byId(ctx.S.data.submissions, row.getAttribute('data-id')));
+      };
+    }
+  };
+
+  // ======================================================================= Resources
+  V.resources = {
+    list: function (ctx) {
+      var f = ctx.S.f.resources;
+      return ctx.S.data.resources.filter(function (r) {
+        if (f.type === 'student' && r.is_official) return false;
+        if (f.type === 'official' && !r.is_official) return false;
+        if (f.programme === '__none' && r.programme_id) return false;
+        if (f.programme && f.programme !== '__none' && r.programme_id !== f.programme) return false;
+        if (f.platform && r.platform !== f.platform) return false;
+        if (f.status === 'active' && !r.is_active) return false;
+        if (f.status === 'inactive' && r.is_active) return false;
+        if (!f.q) return true;
+        return matches([r.title, r.owner_name, r.intake, r.platform, r.url, r.notes, ctx.progName(r.programme_id), ctx.catName(r.category_id)].join(' '), f.q);
+      }).sort(function (a, b) {
+        return ctx.progName(a.programme_id).localeCompare(ctx.progName(b.programme_id)) || (a.sort_order - b.sort_order) || String(a.title).localeCompare(String(b.title));
+      });
+    },
+    table: function (ctx) {
+      var rows = this.list(ctx), limit = ctx.S.limits.resources, canEdit = ctx.can('admin'), selMap = ctx.S.selected;
+      var nSel = Object.keys(selMap).length;
+      if (!rows.length) return html`<div class="dt-wrap">${empty('No resources found', 'Try clearing the filters.')}</div>`;
+      var shown = rows.slice(0, limit);
+      var allSel = canEdit && shown.every(function (r) { return selMap[r.id]; });
+      return html`<p class="result-count" style="margin-bottom:10px">${rows.length} resource${rows.length === 1 ? '' : 's'}</p>
+        <div class="dt-wrap"><table class="dt">
+        <thead><tr>${canEdit ? html`<th class="chk"><input type="checkbox" data-a="sel-all" aria-label="Select all shown" ${allSel ? 'checked' : ''}></th>` : ''}
+          <th>Title</th><th>Programme / collection</th><th>Intake</th><th>Platform</th><th>Status</th><th></th></tr></thead>
+        <tbody>${shown.map(function (r) {
+          return html`<tr class="${r.is_active ? '' : 'inactive'}">
+            ${canEdit ? html`<td class="chk"><input type="checkbox" data-a="sel" data-id="${r.id}" aria-label="Select ${r.title}" ${selMap[r.id] ? 'checked' : ''}></td>` : ''}
+            <td class="primary"><div class="t-main" dir="auto">${r.title}</div><div class="t-sub" dir="auto">${r.owner_name}</div></td>
+            <td data-label="Where">${r.is_official ? html`<span class="badge badge-accent">Official</span> ${r.category_id ? ctx.catName(r.category_id) : (r.programme_id ? ctx.progName(r.programme_id) : 'General')}` : ctx.progName(r.programme_id)}</td>
+            <td data-label="Intake">${r.intake}</td>
+            <td data-label="Platform" class="nowrap">${r.platform}</td>
+            <td data-label="Status" class="nowrap">${ctx.statusBadge(r.is_active)}</td>
+            <td><div class="row-actions">
+              <a class="btn btn-ghost btn-icon btn-sm" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer" title="Open link" aria-label="Open link">${icon('external', 'icon-sm')}</a>
+              ${canEdit ? html`${iconBtn('toggle', r.id, r.is_active ? 'eyeOff' : 'eye', r.is_active ? 'Hide from public site' : 'Show on public site')}
+                ${iconBtn('edit', r.id, 'edit', 'Edit')}` : ''}
+            </div></td></tr>`;
+        })}</tbody></table>
+        ${rows.length > limit ? html`<div class="more-row"><button class="btn btn-secondary btn-sm" data-a="more">Show more (${rows.length - limit})</button></div>` : ''}</div>
+        ${canEdit && nSel ? html`<div class="bulkbar"><span class="sp">${nSel} selected</span>
+          <button class="btn" data-a="bulk" data-op="activate">Show</button>
+          <button class="btn" data-a="bulk" data-op="deactivate">Hide</button>
+          <button class="btn" data-a="bulk" data-op="delete">Delete</button>
+          <button class="btn" data-a="sel-clear">Clear</button></div>` : ''}`;
+    },
+    render: function (ctx) {
+      var f = ctx.S.f.resources, d = ctx.S.data;
+      var progOpts = [{ v: '', l: 'All programmes' }, { v: '__none', l: 'No programme (official)' }]
+        .concat(d.programmes.slice().sort(bySort).map(function (p) { return { v: p.id, l: p.name }; }));
+      var platOpts = [{ v: '', l: 'All platforms' }].concat(d.platforms.slice().sort(bySort).map(function (p) { return { v: p.name, l: p.name }; }));
+      return html`${pageTitle('Resources', 'Every link shown on the site. Hidden resources stay in the database but are not public.',
+          ctx.can('admin') ? html`<button class="btn btn-primary btn-sm" data-a="add">${icon('plus', 'icon-sm')}Add resource</button>` : '')}
+        <div class="filters">
+          ${searchInput('res-q', f.q, 'Search title, owner, intake, link…')}
+          ${sel('res-type', f.type, [{ v: '', l: 'All types' }, { v: 'student', l: 'Student resources' }, { v: 'official', l: 'Official links' }], 'Type')}
+          ${sel('res-prog', f.programme, progOpts, 'Programme')}
+          ${sel('res-plat', f.platform, platOpts, 'Platform')}
+          ${sel('res-status', f.status, [{ v: '', l: 'Any status' }, { v: 'active', l: 'Visible' }, { v: 'inactive', l: 'Hidden' }], 'Status')}
+        </div>
+        <div id="res-table">${this.table(ctx)}</div>`;
+    },
+    mount: function (ctx) {
+      var self = this, f = ctx.S.f.resources, S = ctx.S;
+      function refresh() { setHtml($('#res-table'), self.table(ctx)); }
+      onInputDebounced($('#res-q'), function (e) { f.q = e.target.value; S.limits.resources = 60; refresh(); });
+      [['#res-type', 'type'], ['#res-prog', 'programme'], ['#res-plat', 'platform'], ['#res-status', 'status']].forEach(function (p) {
+        $(p[0]).addEventListener('change', function (e) { f[p[1]] = e.target.value; S.limits.resources = 60; S.selected = {}; refresh(); });
+      });
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b) return;
+        var a = b.getAttribute('data-a'), id = b.getAttribute('data-id');
+        var r = id ? ctx.byId(S.data.resources, id) : null;
+        switch (a) {
+          case 'add': F.openResourceForm(ctx, null); break;
+          case 'edit': F.openResourceForm(ctx, r); break;
+          case 'toggle': toggleActive(ctx, 'resources.setActive', r, 'Resource'); break;
+          case 'more': S.limits.resources += 60; refresh(); break;
+          case 'sel': if (b.checked) S.selected[id] = 1; else delete S.selected[id]; refresh(); break;
+          case 'sel-all': self.list(ctx).slice(0, S.limits.resources).forEach(function (x) { if (b.checked) S.selected[x.id] = 1; else delete S.selected[x.id]; }); refresh(); break;
+          case 'sel-clear': S.selected = {}; refresh(); break;
+          case 'bulk': {
+            var op = b.getAttribute('data-op'), ids = Object.keys(S.selected);
+            var go = function () {
+              return ctx.call('resources.bulk', { ids: ids, op: op }).then(function (d) { S.selected = {}; UI.toast(d.count + ' resource(s) updated'); ctx.renderPage(); })
+                .catch(function (err) { UI.toast(err.message, 'error'); });
+            };
+            if (op === 'delete') F.confirmThen({ title: 'Delete ' + ids.length + ' resource(s)?', message: 'They will be permanently removed.', confirmText: 'Delete', danger: true }, go);
+            else go();
+            break;
+          }
+        }
+      };
+    }
+  };
+
+  // ======================================================================= Programmes
+  V.programmes = {
+    render: function (ctx) {
+      var f = ctx.S.f.programmes, d = ctx.S.data, canEdit = ctx.can('admin');
+      var all = d.programmes.slice().sort(bySort);
+      var rows = all.filter(function (p) {
+        if (f.status === 'active' && !p.is_active) return false;
+        if (f.status === 'inactive' && p.is_active) return false;
+        return !f.q || matches([p.name, p.name_ar, p.code, p.faculty, p.slug].join(' '), f.q);
+      });
+      var counts = {};
+      d.resources.forEach(function (r) { if (r.programme_id) counts[r.programme_id] = (counts[r.programme_id] || 0) + 1; });
+      var reorderable = canEdit && !f.q && !f.status;
+      return html`${pageTitle('Programmes', 'Programmes appear as cards on the homepage and each has its own page.',
+          canEdit ? html`<button class="btn btn-primary btn-sm" data-a="add">${icon('plus', 'icon-sm')}Add programme</button>` : '')}
+        <div class="filters">${searchInput('prog-q', f.q, 'Search name, code, faculty…')}
+          ${sel('prog-status', f.status, [{ v: '', l: 'Any status' }, { v: 'active', l: 'Visible' }, { v: 'inactive', l: 'Hidden' }], 'Status')}</div>
+        ${rows.length ? html`<div class="dt-wrap"><table class="dt">
+          <thead><tr>${reorderable ? html`<th style="width:84px">Order</th>` : ''}<th>Programme</th><th>Faculty</th><th>Resources</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows.map(function (p, i) {
+            return html`<tr class="${p.is_active ? '' : 'inactive'}">
+              ${reorderable ? html`<td data-label="Order"><span class="order-btns">
+                <button class="btn btn-ghost btn-icon btn-sm" data-a="up" data-id="${p.id}" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>${icon('up', 'icon-sm')}</button>
+                <button class="btn btn-ghost btn-icon btn-sm" data-a="down" data-id="${p.id}" aria-label="Move down" ${i === rows.length - 1 ? 'disabled' : ''}>${icon('down', 'icon-sm')}</button></span></td>` : ''}
+              <td class="primary"><div class="t-main">${p.name}</div><div class="t-sub">${p.name_ar ? html`<span dir="rtl">${p.name_ar}</span> · ` : ''}${p.code ? p.code + ' · ' : ''}<span class="ltr">${p.slug}</span></div></td>
+              <td data-label="Faculty">${p.faculty || '—'}</td>
+              <td data-label="Resources">${counts[p.id] || 0}</td>
+              <td data-label="Status">${ctx.statusBadge(p.is_active)}</td>
+              <td><div class="row-actions">
+                <a class="btn btn-ghost btn-icon btn-sm" href="${ctx.publicUrl({ p: 'programme', s: p.slug })}" target="_blank" rel="noopener" title="View public page" aria-label="View public page">${icon('external', 'icon-sm')}</a>
+                ${canEdit ? html`${iconBtn('add-res', p.id, 'plus', 'Add resource to this programme')}
+                  ${iconBtn('toggle', p.id, p.is_active ? 'eyeOff' : 'eye', p.is_active ? 'Hide' : 'Show')}
+                  ${iconBtn('edit', p.id, 'edit', 'Edit')}
+                  ${iconBtn('delete', p.id, 'trash', 'Delete', 'btn-danger-ghost')}` : ''}
+              </div></td></tr>`;
+          })}</tbody></table></div>` : html`<div class="dt-wrap">${empty('No programmes found')}</div>`}
+        ${canEdit && !reorderable && (f.q || f.status) ? html`<p class="hint" style="margin-top:10px">Clear the search and filter to reorder programmes.</p>` : ''}`;
+    },
+    mount: function (ctx) {
+      var f = ctx.S.f.programmes;
+      onInputDebounced($('#prog-q'), function (e) { f.q = e.target.value; ctx.renderPage(); var el = $('#prog-q'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); });
+      $('#prog-status').addEventListener('change', function (e) { f.status = e.target.value; ctx.renderPage(); });
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b || b.disabled) return;
+        var a = b.getAttribute('data-a'), p = ctx.byId(ctx.S.data.programmes, b.getAttribute('data-id'));
+        var sorted = ctx.S.data.programmes.slice().sort(bySort);
+        if (a === 'add') F.openProgrammeForm(ctx, null);
+        if (a === 'edit') F.openProgrammeForm(ctx, p);
+        if (a === 'add-res') F.openResourceForm(ctx, null, { programme_id: p.id });
+        if (a === 'toggle') toggleActive(ctx, 'programmes.setActive', p, 'Programme');
+        if (a === 'delete') del(ctx, 'programmes.delete', p, 'programme', p.name);
+        if (a === 'up' || a === 'down') reorder(ctx, 'programmes.reorder', sorted, p.id, a === 'up' ? -1 : 1);
+      };
+    }
+  };
+
+  // ======================================================================= Collections
+  V.collections = {
+    render: function (ctx) {
+      var d = ctx.S.data, canEdit = ctx.can('admin');
+      var rows = d.categories.slice().sort(bySort);
+      var counts = {};
+      d.resources.forEach(function (r) { if (r.category_id) counts[r.category_id] = (counts[r.category_id] || 0) + 1; });
+      var general = d.resources.filter(function (r) { return r.is_official && !r.category_id && !r.programme_id; }).length;
+      return html`${pageTitle('Official collections', 'Groups of official UniMAP links (e.g. Class Timetable). Each collection has its own page.',
+          canEdit ? html`<button class="btn btn-primary btn-sm" data-a="add">${icon('plus', 'icon-sm')}Add collection</button>` : '')}
+        <div class="notice" style="margin-bottom:16px">${icon('shield')}<span>Official links point to UniMAP’s websites. The hub itself stays an independent student initiative — this is stated next to every official section.</span></div>
+        ${rows.length ? html`<div class="dt-wrap"><table class="dt">
+          <thead><tr>${canEdit ? html`<th style="width:84px">Order</th>` : ''}<th>Collection</th><th>Links</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows.map(function (c, i) {
+            return html`<tr class="${c.is_active ? '' : 'inactive'}">
+              ${canEdit ? html`<td data-label="Order"><span class="order-btns">
+                <button class="btn btn-ghost btn-icon btn-sm" data-a="up" data-id="${c.id}" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>${icon('up', 'icon-sm')}</button>
+                <button class="btn btn-ghost btn-icon btn-sm" data-a="down" data-id="${c.id}" aria-label="Move down" ${i === rows.length - 1 ? 'disabled' : ''}>${icon('down', 'icon-sm')}</button></span></td>` : ''}
+              <td class="primary"><div class="t-main">${c.name}</div><div class="t-sub">${c.name_ar ? html`<span dir="rtl">${c.name_ar}</span> · ` : ''}<span class="ltr">${c.slug}</span></div></td>
+              <td data-label="Links"><a href="#" data-a="filter" data-id="${c.id}">${counts[c.id] || 0}</a></td>
+              <td data-label="Status">${ctx.statusBadge(c.is_active)}</td>
+              <td><div class="row-actions">
+                <a class="btn btn-ghost btn-icon btn-sm" href="${ctx.publicUrl({ p: 'official', c: c.slug })}" target="_blank" rel="noopener" title="View public page" aria-label="View public page">${icon('external', 'icon-sm')}</a>
+                ${canEdit ? html`${iconBtn('add-res', c.id, 'plus', 'Add link to this collection')}
+                  ${iconBtn('toggle', c.id, c.is_active ? 'eyeOff' : 'eye', c.is_active ? 'Hide' : 'Show')}
+                  ${iconBtn('edit', c.id, 'edit', 'Edit')}${iconBtn('delete', c.id, 'trash', 'Delete', 'btn-danger-ghost')}` : ''}
+              </div></td></tr>`;
+          })}</tbody></table></div>` : html`<div class="dt-wrap">${empty('No collections yet')}</div>`}
+        <p class="hint" style="margin-top:12px">${general} official link(s) are not in a collection — they appear in the “General” list of the Official section.</p>`;
+    },
+    mount: function (ctx) {
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b || b.disabled) return;
+        e.preventDefault();
+        var a = b.getAttribute('data-a'), c = ctx.byId(ctx.S.data.categories, b.getAttribute('data-id'));
+        var sorted = ctx.S.data.categories.slice().sort(bySort);
+        if (a === 'add') F.openCollectionForm(ctx, null);
+        if (a === 'edit') F.openCollectionForm(ctx, c);
+        if (a === 'add-res') F.openResourceForm(ctx, null, { is_official: true, category_id: c.id, owner_name: 'Universiti Malaysia Perlis', intake: 'Official', platform: 'Website' });
+        if (a === 'toggle') toggleActive(ctx, 'categories.setActive', c, 'Collection');
+        if (a === 'delete') del(ctx, 'categories.delete', c, 'collection', c.name);
+        if (a === 'up' || a === 'down') reorder(ctx, 'categories.reorder', sorted, c.id, a === 'up' ? -1 : 1);
+        if (a === 'filter') { ctx.S.f.resources = { q: c.name, programme: '', platform: '', status: '', type: 'official' }; ctx.setView('resources'); }
+      };
+    }
+  };
+
+  // ======================================================================= Platforms
+  V.platforms = {
+    render: function (ctx) {
+      var d = ctx.S.data, canEdit = ctx.can('admin');
+      var rows = d.platforms.slice().sort(bySort);
+      var used = {};
+      d.resources.forEach(function (r) { used[r.platform] = (used[r.platform] || 0) + 1; });
+      return html`${pageTitle('Platforms', 'The list students choose from when submitting (Google Drive, OneDrive…).',
+          canEdit ? html`<button class="btn btn-primary btn-sm" data-a="add">${icon('plus', 'icon-sm')}Add platform</button>` : '')}
+        <div class="dt-wrap"><table class="dt">
+          <thead><tr>${canEdit ? html`<th style="width:84px">Order</th>` : ''}<th>Platform</th><th>Used by</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows.map(function (p, i) {
+            return html`<tr class="${p.is_active ? '' : 'inactive'}">
+              ${canEdit ? html`<td data-label="Order"><span class="order-btns">
+                <button class="btn btn-ghost btn-icon btn-sm" data-a="up" data-id="${p.id}" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>${icon('up', 'icon-sm')}</button>
+                <button class="btn btn-ghost btn-icon btn-sm" data-a="down" data-id="${p.id}" aria-label="Move down" ${i === rows.length - 1 ? 'disabled' : ''}>${icon('down', 'icon-sm')}</button></span></td>` : ''}
+              <td class="primary"><div class="t-main">${p.name}</div></td>
+              <td data-label="Used by">${used[p.name] || 0} resource(s)</td>
+              <td data-label="Status">${ctx.statusBadge(p.is_active)}</td>
+              <td><div class="row-actions">${canEdit ? html`${iconBtn('toggle', p.id, p.is_active ? 'eyeOff' : 'eye', p.is_active ? 'Deactivate' : 'Activate')}
+                ${iconBtn('edit', p.id, 'edit', 'Edit')}${iconBtn('delete', p.id, 'trash', 'Delete', 'btn-danger-ghost')}` : ''}</div></td></tr>`;
+          })}</tbody></table></div>`;
+    },
+    mount: function (ctx) {
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b || b.disabled) return;
+        var a = b.getAttribute('data-a'), p = ctx.byId(ctx.S.data.platforms, b.getAttribute('data-id'));
+        var sorted = ctx.S.data.platforms.slice().sort(bySort);
+        if (a === 'add') F.openPlatformForm(ctx, null);
+        if (a === 'edit') F.openPlatformForm(ctx, p);
+        if (a === 'toggle') toggleActive(ctx, 'platforms.setActive', p, 'Platform');
+        if (a === 'delete') del(ctx, 'platforms.delete', p, 'platform', p.name);
+        if (a === 'up' || a === 'down') reorder(ctx, 'platforms.reorder', sorted, p.id, a === 'up' ? -1 : 1);
+      };
+    }
+  };
+
+  // ======================================================================= Admins
+  V.admins = {
+    render: function (ctx) {
+      var rows = ctx.S.data.admins.slice().sort(function (a, b) { return (b.is_active - a.is_active) || String(a.name).localeCompare(String(b.name)); });
+      var roleLabel = { owner: 'Owner', admin: 'Admin', reviewer: 'Reviewer' };
+      return html`${pageTitle('Admins', 'People who can sign in to this dashboard.', html`<button class="btn btn-primary btn-sm" data-a="add">${icon('plus', 'icon-sm')}Add admin</button>`)}
+        <div class="dt-wrap"><table class="dt">
+          <thead><tr><th>Admin</th><th>Role</th><th>Status</th><th>Last sign in</th><th></th></tr></thead>
+          <tbody>${rows.map(function (a) {
+            var self = a.id === ctx.S.me.id;
+            return html`<tr class="${a.is_active ? '' : 'inactive'}">
+              <td class="primary"><div class="t-main">${a.name}${self ? html` <span class="badge">You</span>` : ''}</div><div class="t-sub ltr">${a.email}</div></td>
+              <td data-label="Role"><span class="badge ${a.role === 'owner' ? 'badge-accent' : 'badge-outline'}">${roleLabel[a.role] || a.role}</span></td>
+              <td data-label="Status">${ctx.statusBadge(a.is_active)}${a.must_change_password ? html` <span class="badge badge-warn">Temp password</span>` : ''}</td>
+              <td data-label="Last sign in">${a.last_login ? ctx.when(a.last_login) : 'Never'}</td>
+              <td><div class="row-actions">${iconBtn('edit', a.id, 'edit', 'Edit')}
+                ${self ? '' : html`${iconBtn('reset', a.id, 'key', 'Reset password')}${iconBtn('delete', a.id, 'trash', 'Delete', 'btn-danger-ghost')}`}</div></td></tr>`;
+          })}</tbody></table></div>
+        <div class="card card-pad" style="margin-top:16px"><h3 style="font-size:1rem">Roles</h3>
+          <dl class="kv" style="margin-top:10px"><dt>Reviewer</dt><dd>Reviews submissions (approve / reject) and can view content.</dd>
+          <dt>Admin</dt><dd>Everything a reviewer can do, plus managing programmes, resources, collections, platforms and content settings.</dd>
+          <dt>Owner</dt><dd>Everything, including admins and security settings. At least one active owner is always required.</dd></dl></div>`;
+    },
+    mount: function (ctx) {
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b) return;
+        var a = b.getAttribute('data-a'), adm = ctx.byId(ctx.S.data.admins, b.getAttribute('data-id'));
+        if (a === 'add') F.openAdminForm(ctx, null);
+        if (a === 'edit') F.openAdminForm(ctx, adm);
+        if (a === 'delete') del(ctx, 'admins.delete', adm, 'admin', adm.email);
+        if (a === 'reset') F.confirmThen({ title: 'Reset password?', message: 'A new temporary password will be created for ' + adm.email + '. They will be signed out everywhere.', confirmText: 'Reset password' },
+          function () { return ctx.call('admins.resetPassword', { id: adm.id }).then(function (d) { F.showTempPassword(adm.email, d.temp_password, false); ctx.renderPage(); }).catch(function (err) { UI.toast(err.message, 'error'); }); });
+      };
+    }
+  };
+
+  // ======================================================================= Settings
+  V.settings = {
+    draft: {},
+    render: function (ctx) {
+      var draft = this.draft;
+      var groups = [];
+      ctx.S.data.settings.forEach(function (s) { if (groups.indexOf(s.group) === -1) groups.push(s.group); });
+      var dirty = Object.keys(draft).length;
+      function control(s) {
+        var v = draft[s.key] !== undefined ? draft[s.key] : s.value;
+        var dis = !s.editable;
+        var rtl = /_ar$/.test(s.key);
+        var id = 'set-' + s.key;
+        var label = s.key.replace(/_/g, ' ').replace(/\b(en|ar)$/, function (m) { return m === 'en' ? '(English)' : '(Arabic)'; }).replace(/^./, function (c) { return c.toUpperCase(); });
+        var note = dis ? html` <span class="badge">Owner only</span>` : '';
+        if (s.type === 'bool') {
+          return html`<div class="setting-row"><label class="switch"><span><span class="label" style="display:block">${label}${note}</span><span class="hint">${s.description}</span></span>
+            <input type="checkbox" data-key="${s.key}" ${String(v).toUpperCase() === 'TRUE' ? 'checked' : ''} ${dis ? 'disabled' : ''}><span class="track"></span></label></div>`;
+        }
+        var input;
+        if (s.type === 'longtext') input = html`<textarea class="textarea" id="${id}" data-key="${s.key}" ${UI.raw(s.max ? 'maxlength="' + s.max + '"' : '')} ${dis ? 'disabled' : ''} dir="${rtl ? 'rtl' : 'auto'}" style="min-height:${s.max > 1000 ? 220 : 110}px">${v}</textarea>`;
+        else if (s.type === 'select') input = html`<select class="select" id="${id}" data-key="${s.key}" ${dis ? 'disabled' : ''}>${(s.options || []).map(function (o) { return html`<option value="${o}" ${o === v ? 'selected' : ''}>${o === 'en' ? 'English' : o === 'ar' ? 'Arabic' : o}</option>`; })}</select>`;
+        else input = html`<input class="input" id="${id}" data-key="${s.key}" type="${s.type === 'number' ? 'number' : s.type === 'email' ? 'email' : 'text'}" value="${v}" ${UI.raw(s.max && s.type !== 'number' ? 'maxlength="' + s.max + '"' : '')} ${dis ? 'disabled' : ''} dir="${rtl ? 'rtl' : 'auto'}">`;
+        return html`<div class="setting-row field"><label class="label" for="${id}">${label}${note}</label>${input}<p class="hint">${s.description}${s.default_value && s.type !== 'longtext' ? html` Default: <span class="mono">${s.default_value}</span>` : ''}</p></div>`;
+      }
+      return html`${pageTitle('Settings', ctx.can('admin') ? 'Text, notices and behaviour of the public site. Changes apply immediately after saving.' : 'You can view settings. Only admins can change them.')}
+        ${groups.map(function (g) {
+          return html`<section class="card card-pad settings-group"><h3>${g}</h3><div style="margin-top:6px">${ctx.S.data.settings.filter(function (s) { return s.group === g; }).map(control)}</div></section>`;
+        })}
+        ${dirty ? html`<div class="savebar"><span>${dirty} unsaved change${dirty === 1 ? '' : 's'}</span><span style="display:flex;gap:8px">
+          <button class="btn btn-secondary btn-sm" data-a="discard">Discard</button><button class="btn btn-accent btn-sm" data-a="save">Save changes</button></span></div>` : ''}`;
+    },
+    mount: function (ctx) {
+      var self = this;
+      var page = $('#page');
+      function original(key) { var s = ctx.S.data.settings.filter(function (x) { return x.key === key; })[0]; return s ? s.value : ''; }
+      function update(el) {
+        var key = el.getAttribute('data-key');
+        var val = el.type === 'checkbox' ? (el.checked ? 'TRUE' : 'FALSE') : el.value;
+        var had = Object.keys(self.draft).length;
+        if (val === original(key)) delete self.draft[key]; else self.draft[key] = val;
+        if (!!had !== !!Object.keys(self.draft).length || had !== Object.keys(self.draft).length) {
+          var bar = $('.savebar', page);
+          var n = Object.keys(self.draft).length;
+          if (bar && n) $('span', bar).textContent = n + ' unsaved change' + (n === 1 ? '' : 's');
+          else if (!bar && n) { var y = window.scrollY; ctx.renderPage(); window.scrollTo(0, y); var f = $('[data-key="' + key + '"]'); if (f && f.type !== 'checkbox') { f.focus(); try { f.setSelectionRange(f.value.length, f.value.length); } catch (e) {} } }
+          else if (bar && !n) bar.remove();
+        }
+      }
+      page.oninput = function (e) { if (e.target.hasAttribute('data-key')) update(e.target); };
+      page.onchange = function (e) { if (e.target.hasAttribute('data-key')) update(e.target); };
+      page.onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b) return;
+        if (b.getAttribute('data-a') === 'discard') { self.draft = {}; ctx.renderPage(); }
+        if (b.getAttribute('data-a') === 'save') {
+          UI.setBusy(b, true, 'Saving…');
+          ctx.call('settings.save', { values: self.draft }).then(function (d) {
+            ctx.S.data.settings = d.settings; self.draft = {};
+            UI.toast(d.changed.length ? 'Settings saved' : 'No changes'); ctx.renderPage();
+          }).catch(function (err) {
+            UI.setBusy(b, false); UI.toast(err.message, 'error');
+            if (err.field) { var f = $('[data-key="' + err.field + '"]'); if (f) { f.setAttribute('aria-invalid', 'true'); f.focus(); } }
+          });
+        }
+      };
+    }
+  };
+
+  // ======================================================================= Activity
+  V.activity = {
+    list: function (ctx) {
+      var f = ctx.S.f.activity;
+      return ctx.S.data.activity.filter(function (a) {
+        if (f.type && String(a.action).split('.')[0] !== f.type) return false;
+        return !f.q || matches([a.action, a.details, a.admin_email, a.entity_id].join(' '), f.q);
+      });
+    },
+    feed: function (ctx) {
+      var rows = this.list(ctx);
+      return rows.length ? html`<div class="card"><div class="feed">${rows.map(activityItem)}</div></div>` : html`<div class="card">${empty('No matching activity')}</div>`;
+    },
+    render: function (ctx) {
+      var f = ctx.S.f.activity;
+      var types = [{ v: '', l: 'All actions' }, { v: 'submission', l: 'Submissions' }, { v: 'resource', l: 'Resources' }, { v: 'programme', l: 'Programmes' },
+        { v: 'category', l: 'Collections' }, { v: 'platform', l: 'Platforms' }, { v: 'admin', l: 'Admins' }, { v: 'settings', l: 'Settings' }, { v: 'auth', l: 'Sign-ins' }, { v: 'system', l: 'System' }];
+      return html`${pageTitle('Activity log', 'Every administrative action is recorded with who did it and when.',
+          html`<button class="btn btn-secondary btn-sm" data-a="load">${icon('refresh', 'icon-sm')}Load older entries</button>`)}
+        <div class="filters">${searchInput('act-q', f.q, 'Search actions, details, admin…')}${sel('act-type', f.type, types, 'Action type')}</div>
+        <p class="result-count" style="margin-bottom:10px">Showing the latest ${ctx.S.data.activity.length} entries</p>
+        <div id="act-feed">${this.feed(ctx)}</div>`;
+    },
+    mount: function (ctx) {
+      var self = this, f = ctx.S.f.activity;
+      onInputDebounced($('#act-q'), function (e) { f.q = e.target.value; setHtml($('#act-feed'), self.feed(ctx)); });
+      $('#act-type').addEventListener('change', function (e) { f.type = e.target.value; setHtml($('#act-feed'), self.feed(ctx)); });
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a="load"]'); if (!b) return;
+        UI.setBusy(b, true, 'Loading…');
+        ctx.call('activity.list', { limit: 300 }).then(function (d) { ctx.S.data.activity = d.activity; ctx.renderPage(); })
+          .catch(function (err) { UI.setBusy(b, false); UI.toast(err.message, 'error'); });
+      };
+    }
+  };
+
+  // ======================================================================= Account
+  V.account = {
+    health: null,
+    render: function (ctx) {
+      var me = ctx.S.me, h = this.health;
+      return html`${pageTitle('My account', me.email)}
+        <div class="two-col" style="margin-top:0">
+          <section class="card card-pad"><h3 style="font-size:1rem">Profile</h3>
+            <form id="profile-form" novalidate style="margin-top:14px"><div data-form-error></div>
+              ${F.input('name', 'Display name', me.name, { required: true, max: 120 })}
+              <dl class="kv" style="margin-top:16px"><dt>Email</dt><dd class="ltr">${me.email}</dd><dt>Role</dt><dd>${me.role}</dd><dt>Last sign in</dt><dd>${UI.fmtDate(me.last_login, 'en', true) || '—'}</dd></dl>
+              <button type="submit" class="btn btn-primary btn-sm" style="margin-top:18px">Save profile</button></form></section>
+          <section class="card card-pad"><h3 style="font-size:1rem">Change password</h3>
+            <form id="password-form" novalidate style="margin-top:14px"><div data-form-error></div>${F.passwordFields()}
+              <button type="submit" class="btn btn-primary btn-sm" style="margin-top:18px">Update password</button>
+              <p class="hint" style="margin-top:10px">Changing your password signs you out on all other devices.</p></form></section>
+        </div>
+        ${ctx.can('owner') ? html`<section class="card card-pad" style="margin-top:16px">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center">
+            <div><h3 style="font-size:1rem">System</h3><p class="muted small" style="margin-top:4px">Version ${ctx.S.data.app.version}. Check the spreadsheet structure or clear cached public data after editing the sheet by hand.</p></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" data-a="cache">Clear public cache</button><button class="btn btn-primary btn-sm" data-a="health">Run health check</button></div>
+          </div>
+          ${h ? html`<div class="notice ${h.ok ? 'notice-ok' : 'notice-warn'}" style="margin-top:16px">${icon(h.ok ? 'check' : 'alert')}<span>${h.ok ? 'Everything looks good.' : 'Some checks need attention.'}</span></div>
+            <div class="check-list">${h.checks.map(function (c) { return html`<div class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✓' : '✗'} <span style="color:var(--text)">${c.message}</span></div>`; })}</div>` : ''}
+        </section>` : ''}`;
+    },
+    mount: function (ctx) {
+      var self = this;
+      var pf = $('#profile-form');
+      pf.onsubmit = function (e) {
+        e.preventDefault(); F.clearErrors(pf);
+        var btn = $('button[type=submit]', pf); UI.setBusy(btn, true, 'Saving…');
+        ctx.call('account.updateProfile', { name: F.read(pf).name }).then(function (d) { ctx.S.me = d.admin; UI.toast('Profile saved'); ctx.render(); })
+          .catch(function (err) { UI.setBusy(btn, false); F.showError(pf, err); });
+      };
+      var pw = $('#password-form');
+      pw.onsubmit = function (e) { e.preventDefault(); F.submitPasswordChange(ctx, pw, function () { ctx.renderPage(); }); };
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a]'); if (!b) return;
+        if (b.getAttribute('data-a') === 'health') {
+          UI.setBusy(b, true, 'Checking…');
+          ctx.call('system.health').then(function (d) { self.health = d; ctx.renderPage(); }).catch(function (err) { UI.setBusy(b, false); UI.toast(err.message, 'error'); });
+        }
+        if (b.getAttribute('data-a') === 'cache') {
+          ctx.call('system.clearCache').then(function () { UI.toast('Public cache cleared'); }).catch(function (err) { UI.toast(err.message, 'error'); });
+        }
+      };
+    }
+  };
+})();
+</script>

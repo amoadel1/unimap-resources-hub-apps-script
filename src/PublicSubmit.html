@@ -1,0 +1,243 @@
+<script>
+/* ==========================================================================
+   PublicSubmit.html — resource submission form.
+   Client-side checks are for convenience only; the server re-validates
+   everything (Submissions.gs → submissionCreate_).
+   ========================================================================== */
+(function () {
+  'use strict';
+  var html = UI.html, icon = UI.icon, $ = UI.$, $$ = UI.$$, setHtml = UI.setHtml;
+
+  var draft = { resource_type: 'student', full_name: '', programme_id: '', intake: '', platform: '', resource_url: '', notes: '' };
+  var errors = {};
+  var formError = '';
+  var submitted = false;
+  var startedAt = Date.now();
+  var LIMITS = { full_name: [2, 140], intake: [1, 40], notes: [0, 1000] };
+
+  function clientId() {
+    var id = UI.local.get('urh_cid');
+    if (!id || !/^[a-z0-9]{16,64}$/.test(id)) { id = UI.randomId(16); UI.local.set('urh_cid', id); }
+    return id;
+  }
+
+  function fieldError(name, t) {
+    return errors[name] ? html`<p class="field-error" id="${name}-err">${errors[name]}</p>` : '';
+  }
+  function inv(name) { return errors[name] ? 'aria-invalid="true" aria-describedby="' + name + '-err"' : ''; }
+
+  function render(ctx) {
+    var t = ctx.t, D = ctx.data, st = ctx.state;
+    if (st.route.s && !draft.programme_id) {
+      var pre = ctx.index.progBySlug[st.route.s];
+      if (pre) draft.programme_id = pre.id;
+    }
+    if (!draft.platform && D.platforms.length) draft.platform = D.platforms[0];
+    var isStudent = draft.resource_type === 'student';
+
+    var aside = html`<div class="submit-intro">
+      <span class="eyebrow">${t('nav_submit')}</span>
+      <h1 style="font-size:clamp(1.75rem,1.3rem + 2vw,2.5rem);margin-top:10px">${t('submit_title')}</h1>
+      <p class="muted" style="margin-top:14px;font-size:1.0625rem">${t('submit_lead')}</p>
+    </div>
+    <aside class="submit-steps">
+      <h2 style="font-size:1rem">${t('how_title')}</h2>
+      <div class="steps">
+        <div class="step"><div><strong>${t('how_1_t')}</strong><span>${t('how_1_d')}</span></div></div>
+        <div class="step"><div><strong>${t('how_2_t')}</strong><span>${t('how_2_d')}</span></div></div>
+        <div class="step"><div><strong>${t('how_3_t')}</strong><span>${t('how_3_d')}</span></div></div>
+      </div>
+    </aside>`;
+
+    if (!D.settings.submissions_enabled) {
+      return html`<div class="container submit-layout">${aside}
+        <div class="card card-pad submit-main"><div class="notice notice-warn">${icon('info')}<span>${t('submissions_closed')}</span></div></div></div>`;
+    }
+
+    if (submitted) {
+      return html`<div class="container submit-layout">${aside}
+        <div class="card card-pad submit-main" role="status" aria-live="polite" style="text-align:center;padding-block:48px">
+          <div style="width:52px;height:52px;border-radius:50%;background:var(--ok-soft);color:var(--ok-text);display:grid;place-items:center;margin:0 auto">${icon('check')}</div>
+          <h2 style="font-size:1.375rem;margin-top:18px">${t('submit_ok_title')}</h2>
+          <p class="muted" style="margin:10px auto 0;max-width:420px">${t('submit_ok_text')}</p>
+          <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:24px">
+            <button type="button" class="btn btn-primary" data-submit-action="again">${t('submit_another')}</button>
+            ${ctx.navLink({ p: 'home' }, t('back_home'), 'btn btn-secondary')}
+          </div>
+        </div></div>`;
+    }
+
+    return html`<div class="container submit-layout">${aside}
+      <form id="submit-form" class="card card-pad submit-main" novalidate>
+        <div class="field">
+          <span class="label" id="type-label">${t('type_label')}</span>
+          <div class="segmented" role="group" aria-labelledby="type-label">
+            <button type="button" data-type="student" aria-pressed="${String(isStudent)}">${t('type_student')}</button>
+            <button type="button" data-type="official" aria-pressed="${String(!isStudent)}">${t('type_official')}</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="full_name">${t('f_full_name')}</label>
+          <input class="input" id="full_name" name="full_name" autocomplete="name" maxlength="140" required value="${draft.full_name}" ${UI.raw(inv('full_name'))}>
+          <p class="hint">${t('f_full_name_hint')}</p>
+          ${fieldError('full_name')}
+        </div>
+
+        ${isStudent ? html`<div class="field">
+          <label class="label" for="programme_id">${t('f_programme')}</label>
+          <select class="select" id="programme_id" name="programme_id" required ${UI.raw(inv('programme_id'))}>
+            <option value="">${t('f_programme_choose')}</option>
+            ${D.programmes.map(function (p) { return html`<option value="${p.id}" ${draft.programme_id === p.id ? 'selected' : ''}>${ctx.L(p, 'name')}</option>`; })}
+          </select>
+          ${fieldError('programme_id')}
+        </div>` : ''}
+
+        <div class="${isStudent ? 'row-2' : ''} field-row">
+          ${isStudent ? html`<div class="field">
+            <label class="label" for="intake">${t('f_intake')}</label>
+            <input class="input" id="intake" name="intake" inputmode="numeric" maxlength="40" list="intake-list" placeholder="${t('f_intake_hint')}" required value="${draft.intake}" ${UI.raw(inv('intake'))}>
+            <datalist id="intake-list">${intakeOptions()}</datalist>
+            ${fieldError('intake')}
+          </div>` : ''}
+          <div class="field">
+            <label class="label" for="platform">${t('f_platform')}</label>
+            <select class="select" id="platform" name="platform" required ${UI.raw(inv('platform'))}>
+              ${D.platforms.map(function (pl) { return html`<option value="${pl}" ${draft.platform === pl ? 'selected' : ''}>${pl}</option>`; })}
+            </select>
+            ${fieldError('platform')}
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="resource_url">${t('f_url')}</label>
+          <input class="input ltr" dir="ltr" id="resource_url" name="resource_url" type="url" inputmode="url" autocomplete="url" maxlength="2048" spellcheck="false"
+                 placeholder="https://" required value="${draft.resource_url}" ${UI.raw(inv('resource_url'))}>
+          <p class="hint">${t('f_url_hint')}</p>
+          ${fieldError('resource_url')}
+        </div>
+
+        <div class="field">
+          <label class="label" for="notes">${t('f_notes')} <span class="opt">(${t('optional')})</span></label>
+          <textarea class="textarea" id="notes" name="notes" maxlength="1000" dir="auto" placeholder="${t('f_notes_ph')}" ${UI.raw(inv('notes'))}>${draft.notes}</textarea>
+          <p class="counter"><span id="notes-count">${draft.notes.length}</span>/1000</p>
+          ${fieldError('notes')}
+        </div>
+
+        <div class="hp-field" aria-hidden="true">
+          <label for="website">Website</label>
+          <input id="website" name="website" type="text" tabindex="-1" autocomplete="off">
+        </div>
+
+        <div class="notice" style="margin-top:20px">${icon('info')}<span>${t('submit_privacy')}</span></div>
+        ${formError ? html`<div class="notice notice-danger" role="alert" style="margin-top:12px">${icon('alert')}<span>${formError}</span></div>` : ''}
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top:20px;min-height:50px">${t('submit_btn')}</button>
+      </form>
+    </div>`;
+  }
+
+  function intakeOptions() {
+    var y = new Date().getFullYear(), out = [];
+    for (var i = y; i >= y - 12; i--) out.push(html`<option value="${i}">`);
+    return out;
+  }
+
+  function validate(t) {
+    var e = {};
+    var isStudent = draft.resource_type === 'student';
+    var name = draft.full_name.trim();
+    if (!name) e.full_name = t('err_REQUIRED'); else if (name.length < 2) e.full_name = t('err_TOO_SHORT');
+    if (isStudent) {
+      if (!draft.programme_id) e.programme_id = t('err_REQUIRED');
+      if (!draft.intake.trim()) e.intake = t('err_REQUIRED');
+    }
+    if (!draft.platform) e.platform = t('err_REQUIRED');
+    var u = draft.resource_url.trim();
+    if (!u) e.resource_url = t('err_REQUIRED');
+    else if (!/^https?:\/\/[^\s\/?#]+\.[^\s\/?#]+([\/?#][^\s]*)?$/i.test(u)) e.resource_url = t('err_INVALID_URL');
+    if (draft.notes.length > 1000) e.notes = t('err_TOO_LONG');
+    return e;
+  }
+
+  function mount(ctx) {
+    var t = ctx.t;
+    var form = $('#submit-form');
+    var again = $('[data-submit-action="again"]');
+    if (again) again.addEventListener('click', function () {
+      submitted = false; startedAt = Date.now();
+      draft.resource_url = ''; draft.notes = '';
+      PublicApp.render(); window.scrollTo(0, 0);
+    });
+    if (!form) return;
+
+    $$('[data-type]', form).forEach(function (b) {
+      b.addEventListener('click', function () {
+        draft.resource_type = b.getAttribute('data-type');
+        errors = {}; formError = '';
+        PublicApp.render();
+      });
+    });
+    form.addEventListener('input', function (e) {
+      var el = e.target;
+      if (el.name && Object.prototype.hasOwnProperty.call(draft, el.name)) draft[el.name] = el.value;
+      if (el.name === 'notes') { var c = $('#notes-count'); if (c) c.textContent = el.value.length; }
+      if (errors[el.name]) {
+        delete errors[el.name];
+        el.removeAttribute('aria-invalid');
+        var er = $('#' + el.name + '-err'); if (er) er.remove();
+      }
+    });
+    form.addEventListener('change', function (e) {
+      if (e.target.name && Object.prototype.hasOwnProperty.call(draft, e.target.name)) draft[e.target.name] = e.target.value;
+    });
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      errors = validate(t);
+      if (Object.keys(errors).length) {
+        formError = t('err_form');
+        PublicApp.render();
+        var first = $('[aria-invalid="true"]'); if (first) first.focus();
+        return;
+      }
+      formError = '';
+      var btn = $('button[type="submit"]', form);
+      UI.setBusy(btn, true, t('submitting'));
+      var payload = {
+        resource_type: draft.resource_type,
+        full_name: draft.full_name,
+        programme_id: draft.resource_type === 'student' ? draft.programme_id : '',
+        intake: draft.resource_type === 'student' ? draft.intake : '',
+        platform: draft.platform,
+        resource_url: draft.resource_url.trim(),
+        notes: draft.notes,
+        website: ($('#website', form) || {}).value || '',
+        elapsed_ms: Date.now() - startedAt,
+        client_id: clientId()
+      };
+      UI.rpc('submitResource', payload).then(function (res) {
+        if (res && res.ok) {
+          submitted = true;
+          errors = {};
+          PublicApp.render();
+          window.scrollTo(0, 0);
+          return;
+        }
+        var err = (res && res.error) || { code: 'SERVER_ERROR' };
+        var msg = t('err_' + err.code);
+        if (msg === 'err_' + err.code) msg = err.message || t('err_SERVER_ERROR');
+        var fieldMap = { url: 'resource_url' };
+        var f = fieldMap[err.field] || err.field;
+        if (f && Object.prototype.hasOwnProperty.call(draft, f) && f !== 'resource_type') { errors[f] = msg; formError = t('err_form'); }
+        else formError = msg;
+        PublicApp.render();
+        var first = $('[aria-invalid="true"]') || $('.notice-danger'); if (first && first.focus) first.focus();
+      }).catch(function () {
+        formError = t('err_OFFLINE');
+        PublicApp.render();
+      });
+    });
+  }
+
+  PublicViews.submit = { render: render, mount: mount };
+})();
+</script>

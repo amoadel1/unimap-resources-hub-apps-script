@@ -1,0 +1,642 @@
+<script>
+/* ==========================================================================
+   PublicApp.html — public website (single-page app inside Apps Script).
+   Data arrives embedded in the page by doGet(), so the first render needs
+   ZERO extra server calls. Search and filtering run in the browser.
+   ========================================================================== */
+window.PublicViews = window.PublicViews || {};
+window.PublicApp = (function () {
+  'use strict';
+  var html = UI.html, raw = UI.raw, icon = UI.icon, $ = UI.$, $$ = UI.$$, setHtml = UI.setHtml, norm = UI.norm;
+
+  var APP_URL = window.__APP_URL__ || '';
+  var BOOT = window.__BOOT__ || { ok: false };
+  var D = null;          // public data bundle
+  var IX = null;         // derived indexes
+  var state = {
+    lang: 'en',
+    route: { p: 'home' },
+    homeQuery: '',
+    faculty: 'all',
+    filters: { q: '', intake: '', platform: '', sort: 'newest' },
+    menuOpen: false,
+    welcomeOpen: false,
+    searchLimit: 60
+  };
+
+  // ------------------------------------------------------------------ i18n
+  function t(key, vars) {
+    var dict = I18N[state.lang] || I18N.en;
+    var s = dict[key] !== undefined ? dict[key] : (I18N.en[key] !== undefined ? I18N.en[key] : key);
+    if (vars) Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(vars[k]); });
+    return s;
+  }
+  /** Localised field: uses name_ar etc. when Arabic is active and a translation exists. */
+  function L(obj, field) {
+    if (!obj) return '';
+    if (state.lang === 'ar' && obj[field + '_ar']) return obj[field + '_ar'];
+    return obj[field] || '';
+  }
+  /** Localised setting: key_en / key_ar. */
+  function S(key) {
+    var s = (D && D.settings) || {};
+    return s[key + '_' + state.lang] || s[key + '_en'] || s[key] || '';
+  }
+  function countLabel(n) { return n === 1 ? t('resource_count_1') : t('resources_count', { n: n }); }
+
+  function setLang(lang, rerender) {
+    state.lang = lang === 'ar' ? 'ar' : 'en';
+    var root = document.documentElement;
+    root.lang = state.lang;
+    root.dir = I18N[state.lang].dir;
+    UI.local.set('urh_lang', state.lang);
+    if (rerender) render();
+  }
+
+  // ------------------------------------------------------------------ Data indexes
+  function intakeRank(v) {
+    var m = /(\d{4})/.exec(String(v || ''));
+    return m ? parseInt(m[1], 10) : -1;
+  }
+  function buildIndex() {
+    var ix = { progById: {}, progBySlug: {}, catById: {}, catBySlug: {}, byProg: {}, byCat: {}, general: [], search: [] };
+    D.programmes.forEach(function (p) { ix.progById[p.id] = p; ix.progBySlug[p.slug] = p; ix.byProg[p.id] = []; });
+    D.categories.forEach(function (c) { ix.catById[c.id] = c; ix.catBySlug[c.slug] = c; ix.byCat[c.id] = []; });
+    D.resources.forEach(function (r) {
+      if (r.programme_id && ix.byProg[r.programme_id]) ix.byProg[r.programme_id].push(r);
+      if (r.is_official) {
+        if (r.category_id && ix.byCat[r.category_id]) ix.byCat[r.category_id].push(r);
+        else if (!r.programme_id) ix.general.push(r);
+      }
+      var p = ix.progById[r.programme_id], c = ix.catById[r.category_id];
+      r._text = norm([r.title, r.owner_name, r.intake, r.platform, r.notes,
+        p && p.name, p && p.name_ar, p && p.code, p && p.faculty, c && c.name, c && c.name_ar, r.is_official ? 'official رسمي' : ''].join(' '));
+    });
+    D.programmes.forEach(function (p) {
+      p._text = norm([p.name, p.name_ar, p.code, p.faculty, p.description, p.description_ar].join(' '));
+    });
+    D.categories.forEach(function (c) { c._text = norm([c.name, c.name_ar, c.description, c.description_ar].join(' ')); });
+    var bySort = function (a, b) { return (a.sort_order - b.sort_order) || String(a.title).localeCompare(String(b.title)); };
+    Object.keys(ix.byCat).forEach(function (k) { ix.byCat[k].sort(bySort); });
+    ix.general.sort(bySort);
+    ix.faculties = [];
+    D.programmes.forEach(function (p) { if (p.faculty && ix.faculties.indexOf(p.faculty) === -1) ix.faculties.push(p.faculty); });
+    ix.studentCount = D.resources.filter(function (r) { return !r.is_official; }).length;
+    ix.officialCount = D.resources.filter(function (r) { return r.is_official; }).length;
+    return ix;
+  }
+
+  // ------------------------------------------------------------------ Routing
+  function paramsFor(route) {
+    var p = {};
+    if (route.p && route.p !== 'home') p.p = route.p;
+    if (route.s) p.s = route.s;
+    if (route.c) p.c = route.c;
+    if (route.q) p.q = route.q;
+    return p;
+  }
+  function hrefFor(route) {
+    var p = paramsFor(route);
+    var qs = Object.keys(p).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(p[k]); }).join('&');
+    return (APP_URL || '') + (qs ? '?' + qs : (APP_URL ? '' : '?'));
+  }
+  function navLink(route, content, cls, extra) {
+    return html`<a href="${hrefFor(route)}" data-route="${JSON.stringify(route)}" class="${cls || ''}" ${raw(extra || '')}>${content}</a>`;
+  }
+  function navigate(route, opts) {
+    opts = opts || {};
+    state.route = route;
+    state.menuOpen = false;
+    if (route.p === 'programme') state.filters = { q: '', intake: '', platform: '', sort: 'newest' };
+    if (route.p === 'home' || route.p === 'search') { state.homeQuery = route.q || ''; state.searchLimit = 60; }
+    try {
+      if (window.google && google.script && google.script.history) {
+        google.script.history[opts.replace ? 'replace' : 'push'](route, paramsFor(route));
+      }
+    } catch (e) {}
+    render();
+    if (!opts.keepScroll) window.scrollTo(0, 0);
+    if (opts.focusMain !== false) { var m = $('#main'); if (m) m.focus({ preventScroll: true }); }
+  }
+
+  // ------------------------------------------------------------------ Layout
+  function header() {
+    var s = (D && D.settings) || {};
+    var p = state.route.p;
+    function nl(route, label, key) { return navLink(route, label, '', p === key ? 'aria-current="page"' : ''); }
+    return html`<header class="site-header">
+      <div class="container">
+        <div class="bar">
+          ${navLink({ p: 'home' }, html`<span class="brand-mark" aria-hidden="true">UR</span>
+            <span class="brand-text"><span class="brand-name">${s.site_name || 'UniMAP Resources Hub'}</span>
+            <span class="brand-tag">${S('tagline') || t('by_students')}</span></span>`, 'brand', 'aria-label="' + UI.esc(s.site_name || 'Home') + '"')}
+          <nav class="nav" aria-label="Main">
+            ${nl({ p: 'home' }, t('nav_programmes'), p === 'programme' || p === 'search' ? p : 'home')}
+            ${nl({ p: 'official' }, t('nav_official'), 'official')}
+            ${nl({ p: 'submit' }, t('nav_submit'), 'submit')}
+            ${nl({ p: 'about' }, t('nav_about'), 'about')}
+          </nav>
+          <div class="header-actions">
+            <button type="button" class="btn btn-ghost lang-btn" data-action="lang" aria-label="${t('switchToLabel')}" lang="${state.lang === 'ar' ? 'en' : 'ar'}">${t('switchTo')}</button>
+            <button type="button" class="btn btn-ghost btn-icon menu-btn" data-action="menu" aria-expanded="${state.menuOpen ? 'true' : 'false'}" aria-controls="mobile-menu" aria-label="${t('menu')}">${icon(state.menuOpen ? 'x' : 'menu')}</button>
+          </div>
+        </div>
+        <div id="mobile-menu" class="mobile-menu ${state.menuOpen ? '' : 'hidden'}">
+          ${navLink({ p: 'home' }, html`<span>${t('home')}</span>${icon('arrow', 'icon-sm flip-rtl')}`)}
+          ${navLink({ p: 'official' }, html`<span>${t('nav_official')}</span>${icon('arrow', 'icon-sm flip-rtl')}`)}
+          ${navLink({ p: 'submit' }, html`<span>${t('submit_resource')}</span>${icon('arrow', 'icon-sm flip-rtl')}`)}
+          ${navLink({ p: 'about' }, html`<span>${t('nav_about')}</span>${icon('arrow', 'icon-sm flip-rtl')}`)}
+        </div>
+      </div>
+    </header>`;
+  }
+
+  function announcement() {
+    var a = S('announcement');
+    return a ? html`<div class="announcement" role="note"><div class="container" dir="auto">${a}</div></div>` : '';
+  }
+
+  function footer() {
+    var s = D.settings;
+    var year = new Date().getFullYear();
+    return html`<footer class="site-footer">
+      <div class="container footer-grid">
+        <div>
+          <p style="font-weight:600;color:var(--text)">${s.site_name}</p>
+          <p style="margin-top:8px;max-width:620px" dir="auto">${S('disclaimer')}</p>
+          ${s.contact_email ? html`<p style="margin-top:10px"><a href="mailto:${s.contact_email}" class="latin">${s.contact_email}</a></p>` : ''}
+          <p class="subtle xsmall" style="margin-top:10px">© ${year} · ${S('tagline') || t('by_students')}</p>
+        </div>
+        <div class="footer-links">
+          ${navLink({ p: 'home' }, t('nav_programmes'))}
+          ${navLink({ p: 'official' }, t('nav_official'))}
+          ${navLink({ p: 'submit' }, t('nav_submit'))}
+          ${navLink({ p: 'about' }, t('nav_about'))}
+          <button type="button" data-action="theme" aria-label="${t('theme_toggle')}">${t('theme_toggle')}</button>
+          <a href="${(APP_URL || '') + '?p=admin'}" target="_top" rel="nofollow">${t('footer_admin')}</a>
+        </div>
+      </div>
+    </footer>`;
+  }
+
+  // ------------------------------------------------------------------ Components
+  function highlight(text, q) {
+    text = String(text || '');
+    var terms = String(q || '').trim().split(/\s+/).filter(function (x) { return x.length > 1; })
+      .map(function (x) { return x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); });
+    if (!terms.length) return text;
+    var re = new RegExp('(' + terms.join('|') + ')', 'gi');
+    var parts = text.split(re);
+    return parts.map(function (part, i) { return i % 2 ? html`<mark>${part}</mark>` : part; });
+  }
+
+  function resourceCard(r, opts) {
+    opts = opts || {};
+    var p = IX.progById[r.programme_id], c = IX.catById[r.category_id];
+    var context = opts.hideContext ? '' : (p ? L(p, 'name') : (c ? L(c, 'name') : ''));
+    var longNotes = r.notes && r.notes.length > 150;
+    return html`<article class="card res-card">
+      <div class="top">
+        <div style="min-width:0">
+          <h3 dir="auto" class="break">${highlight(r.title, opts.q)}</h3>
+          ${context ? html`<p class="sub" dir="auto">${context}</p>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          ${r.is_official ? html`<span class="badge badge-accent">${icon('shield', 'icon-sm')}${t('official_badge')}</span>` : ''}
+          <span class="badge latin">${r.platform}</span>
+        </div>
+      </div>
+      <dl>
+        <dt>${t('owner')}</dt><dd dir="auto">${highlight(r.owner_name, opts.q)}</dd>
+        <dt>${t('intake')}</dt><dd dir="auto">${highlight(r.intake, opts.q)}</dd>
+      </dl>
+      ${r.notes ? html`<div><p class="notes" dir="auto">${r.notes}</p>${longNotes ? html`<button type="button" class="btn btn-ghost btn-xs" data-action="notes" style="margin-top:4px;padding-inline:0">${t('show_more_notes')}</button>` : ''}</div>` : ''}
+      <div class="actions">
+        <a class="btn btn-primary btn-sm" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${t('open_resource')} ${icon('external', 'icon-sm')}</a>
+        <button type="button" class="btn btn-secondary btn-icon btn-sm" data-action="copy" data-url="${UI.safeUrl(r.url)}" aria-label="${t('copy_link')}" title="${t('copy_link')}">${icon('copy', 'icon-sm')}</button>
+      </div>
+    </article>`;
+  }
+
+  function programmeCard(p) {
+    var n = (IX.byProg[p.id] || []).length;
+    var eyebrow = [p.faculty, p.code].filter(Boolean).join(' · ');
+    return navLink({ p: 'programme', s: p.slug }, html`
+      ${eyebrow ? html`<span class="eyebrow" dir="auto">${eyebrow}</span>` : ''}
+      <h3 dir="auto">${L(p, 'name')}</h3>
+      <span class="meta"><span>${n ? countLabel(n) : t('no_resources_yet')}</span>${icon('arrow', 'go icon-sm')}</span>`, 'card prog-card');
+  }
+
+  function linkRow(r) {
+    return html`<a class="link-row" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">
+      <span class="t"><span dir="auto" style="display:block">${r.title}</span>${r.notes ? html`<span class="n" dir="auto" style="display:block">${r.notes}</span>` : ''}</span>
+      ${icon('external', 'icon-sm')}
+    </a>`;
+  }
+
+  function collectionCard(c) {
+    var n = (IX.byCat[c.id] || []).length;
+    return navLink({ p: 'official', c: c.slug }, html`<span class="ic">${icon('layers')}</span>
+      <span style="flex:1;min-width:0"><h3 dir="auto">${L(c, 'name')}</h3><span class="subtle small">${t('links_count', { n: n })}</span></span>
+      ${icon('arrow', 'icon-sm flip-rtl')}`, 'card coll-card');
+  }
+
+  // ------------------------------------------------------------------ Views
+  function viewHome() {
+    var s = D.settings;
+    return html`
+      <section class="container hero ${state.homeQuery.trim() ? 'is-searching' : ''}">
+        <span class="pill">${S('tagline') || t('by_students')}</span>
+        <h1>${s.site_name}</h1>
+        <p class="lead" dir="auto">${S('hero_description')}</p>
+        <div class="hero-search search-box" role="search">
+          ${icon('search')}
+          <label class="sr-only" for="home-search">${t('search_label')}</label>
+          <input id="home-search" class="input" type="search" autocomplete="off" enterkeyhint="search" spellcheck="false"
+                 placeholder="${t('search_placeholder')}" value="${state.homeQuery}">
+          <button type="button" class="btn btn-ghost btn-icon btn-sm clear ${state.homeQuery ? '' : 'hidden'}" data-action="clear-search" aria-label="${t('search_clear')}">${icon('x', 'icon-sm')}</button>
+        </div>
+        <div class="hero-stats" aria-label="Statistics">
+          <span><strong>${D.programmes.length}</strong>${t('stat_programmes')}</span>
+          <span><strong>${IX.studentCount}</strong>${t('stat_resources')}</span>
+          <span><strong>${IX.officialCount}</strong>${t('stat_official')}</span>
+        </div>
+        ${S('access_notice') ? html`<div class="notice notice-warn hero-notice" role="note">${icon('info')}<span dir="auto">${S('access_notice')}</span></div>` : ''}
+      </section>
+      <div id="home-body">${homeBody()}</div>`;
+  }
+
+  function homeBody() {
+    return state.homeQuery.trim() ? searchResults(state.homeQuery) : homeSections();
+  }
+
+  function homeSections() {
+    var s = D.settings;
+    var progs = state.faculty === 'all' ? D.programmes : D.programmes.filter(function (p) { return p.faculty === state.faculty; });
+    var paras = String(S('welcome') || '').split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var shown = state.welcomeOpen ? paras : paras.slice(0, 2);
+    return html`
+      <section class="section container" id="programmes" style="padding-top:24px">
+        <div class="section-head">
+          <div><span class="eyebrow">${t('programmes')}</span><h2>${t('programmes_title')}</h2><p>${t('programmes_sub')}</p></div>
+          ${navLink({ p: 'submit' }, html`${icon('plus', 'icon-sm')}${t('submit_resource')}`, 'btn btn-secondary btn-sm')}
+        </div>
+        ${IX.faculties.length > 1 ? html`<div class="chips" role="group" aria-label="Faculty" style="margin-bottom:18px">
+          <button type="button" class="chip" data-faculty="all" aria-pressed="${String(state.faculty === 'all')}">${t('all')}</button>
+          ${IX.faculties.map(function (f) { return html`<button type="button" class="chip" data-faculty="${f}" aria-pressed="${String(state.faculty === f)}" dir="auto">${f}</button>`; })}
+        </div>` : ''}
+        <div class="grid grid-3">${progs.map(programmeCard)}</div>
+      </section>
+
+      ${D.categories.length || IX.general.length ? html`<section class="section container" id="official" style="padding-top:8px">
+        <div class="section-head">
+          <div><span class="eyebrow">${t('official_eyebrow')}</span><h2>${t('official_title')}</h2><p dir="auto">${S('official_intro')}</p></div>
+        </div>
+        <div class="grid grid-3">${D.categories.map(collectionCard)}</div>
+        ${IX.general.length ? html`<div class="card list-card" style="margin-top:14px">${IX.general.map(linkRow)}</div>` : ''}
+        <div class="notice" style="margin-top:14px">${icon('shield')}<span>${t('official_note')}</span></div>
+      </section>` : ''}
+
+      ${s.show_welcome && paras.length ? html`<section class="section container" style="padding-top:8px">
+        <div class="card card-pad" style="max-width:860px">
+          <h2 style="font-size:1.375rem">${t('welcome')}</h2>
+          <div class="prose" style="margin-top:14px" dir="auto">${shown.map(function (p) { return html`<p>${p}</p>`; })}</div>
+          ${paras.length > 2 ? html`<button type="button" class="btn btn-ghost btn-sm" data-action="welcome" style="margin-top:10px;padding-inline:0">${state.welcomeOpen ? t('read_less') : t('read_more')}</button>` : ''}
+          <hr class="divider">
+          <div class="maint">
+            <span class="avatar">${initials(s.maintainer_name)}</span>
+            <div><p style="font-weight:600" dir="auto">${state.lang === 'ar' && s.maintainer_name_ar ? s.maintainer_name_ar : s.maintainer_name}</p>
+              <p class="subtle small" dir="auto">${S('maintainer_role') || s.maintainer_role}${s.contact_email ? html` · <a href="mailto:${s.contact_email}" class="latin">${s.contact_email}</a>` : ''}</p></div>
+          </div>
+        </div>
+      </section>` : ''}`;
+  }
+
+  function initials(name) {
+    var parts = String(name || '').trim().split(/\s+/);
+    return ((parts[0] || '').charAt(0) + (parts[1] || '').charAt(0)).toUpperCase() || 'U';
+  }
+
+  function matchAll(text, terms) {
+    for (var i = 0; i < terms.length; i++) if (text.indexOf(terms[i]) === -1) return false;
+    return true;
+  }
+
+  function searchResults(q) {
+    var terms = norm(q).split(' ').filter(Boolean);
+    var first = terms[0] || '';
+    var progs = D.programmes.filter(function (p) { return matchAll(p._text, terms); });
+    var cats = D.categories.filter(function (c) { return matchAll(c._text, terms); });
+    var res = D.resources.filter(function (r) { return matchAll(r._text, terms); });
+    res.sort(function (a, b) {
+      var sa = norm(a.title).indexOf(first) === 0 || norm(a.owner_name).indexOf(first) === 0 ? 0 : 1;
+      var sb = norm(b.title).indexOf(first) === 0 || norm(b.owner_name).indexOf(first) === 0 ? 0 : 1;
+      return (sa - sb) || (intakeRank(b.intake) - intakeRank(a.intake)) || String(a.title).localeCompare(String(b.title));
+    });
+    var total = progs.length + cats.length + res.length;
+    if (!total) {
+      return html`<section class="container search-results"><div class="card empty">
+        <h3>${t('search_none', { q: q })}</h3><p>${t('search_none_hint')}</p></div></section>`;
+    }
+    var shown = res.slice(0, state.searchLimit);
+    return html`<section class="container search-results" aria-live="polite">
+      <p class="result-count" style="margin-bottom:20px">${t('search_results_for', { q: q })} · ${total}</p>
+      ${progs.length ? html`<div class="search-group"><h3>${icon('grid', 'icon-sm')}${t('programmes')} <span class="subtle">${progs.length}</span></h3>
+        <div class="grid grid-3">${progs.map(programmeCard)}</div></div>` : ''}
+      ${cats.length ? html`<div class="search-group"><h3>${icon('layers', 'icon-sm')}${t('official_title')} <span class="subtle">${cats.length}</span></h3>
+        <div class="grid grid-3">${cats.map(collectionCard)}</div></div>` : ''}
+      ${res.length ? html`<div class="search-group"><h3>${icon('folder', 'icon-sm')}${t('resources')} <span class="subtle">${res.length}</span></h3>
+        <div class="grid grid-3">${shown.map(function (r) { return resourceCard(r, { q: q }); })}</div>
+        ${res.length > shown.length ? html`<div style="text-align:center;margin-top:20px"><button type="button" class="btn btn-secondary" data-action="more-results">${t('show_more')} (${res.length - shown.length})</button></div>` : ''}
+      </div>` : ''}
+    </section>`;
+  }
+
+  function viewProgramme() {
+    var p = IX.progBySlug[state.route.s];
+    if (!p) return viewNotFound();
+    var list = IX.byProg[p.id] || [];
+    var intakes = [], platforms = [];
+    list.forEach(function (r) {
+      if (r.intake && intakes.indexOf(r.intake) === -1) intakes.push(r.intake);
+      if (platforms.indexOf(r.platform) === -1) platforms.push(r.platform);
+    });
+    intakes.sort(function (a, b) { return intakeRank(b) - intakeRank(a) || a.localeCompare(b); });
+    var eyebrow = [p.faculty, p.code].filter(Boolean).join(' · ');
+    var desc = L(p, 'description');
+    return html`
+      <section class="container page-head">
+        <nav class="crumbs" aria-label="Breadcrumb">${navLink({ p: 'home' }, t('home'))}<span aria-hidden="true">/</span>${navLink({ p: 'home' }, t('programmes'))}</nav>
+        ${eyebrow ? html`<p class="eyebrow" style="margin-top:18px" dir="auto">${eyebrow}</p>` : ''}
+        <h1 dir="auto">${L(p, 'name')}</h1>
+        ${desc ? html`<p class="lead" dir="auto">${desc}</p>` : ''}
+        <p class="subtle small" style="margin-top:12px">${countLabel(list.length)}${platforms.length ? ' · ' + platforms.join(', ') : ''}</p>
+      </section>
+      <section class="container" style="padding-bottom:64px">
+        ${list.length ? html`
+          <div class="toolbar">
+            <div class="search-box">${icon('search')}<label class="sr-only" for="prog-search">${t('filter_search')}</label>
+              <input id="prog-search" class="input" type="search" autocomplete="off" placeholder="${t('filter_search')}" value="${state.filters.q}"></div>
+            <label class="sr-only" for="f-intake">${t('intake')}</label>
+            <select id="f-intake" class="select" style="min-height:46px">
+              <option value="">${t('filter_all_intakes')}</option>
+              ${intakes.map(function (i) { return html`<option value="${i}" ${state.filters.intake === i ? 'selected' : ''}>${i}</option>`; })}
+            </select>
+            <label class="sr-only" for="f-sort">Sort</label>
+            <select id="f-sort" class="select" style="min-height:46px">
+              <option value="newest" ${state.filters.sort === 'newest' ? 'selected' : ''}>${t('sort_newest')}</option>
+              <option value="oldest" ${state.filters.sort === 'oldest' ? 'selected' : ''}>${t('sort_oldest')}</option>
+              <option value="az" ${state.filters.sort === 'az' ? 'selected' : ''}>${t('sort_az')}</option>
+            </select>
+          </div>
+          ${platforms.length > 1 ? html`<div class="chips" role="group" aria-label="${t('platform')}" style="margin-bottom:18px">
+            <button type="button" class="chip" data-platform="" aria-pressed="${String(!state.filters.platform)}">${t('filter_all_platforms')}</button>
+            ${platforms.map(function (pl) { return html`<button type="button" class="chip latin" data-platform="${pl}" aria-pressed="${String(state.filters.platform === pl)}">${pl}</button>`; })}
+          </div>` : ''}
+          <div id="prog-list">${programmeList(list)}</div>`
+        : html`<div class="card empty"><h3>${t('empty_programme')}</h3><p>${t('empty_programme_hint')}</p>
+            ${navLink({ p: 'submit', s: p.slug }, html`${icon('plus', 'icon-sm')}${t('submit_resource')}`, 'btn btn-primary')}</div>`}
+      </section>`;
+  }
+
+  function programmeList(list) {
+    var f = state.filters;
+    var terms = norm(f.q).split(' ').filter(Boolean);
+    var rows = list.filter(function (r) {
+      return (!f.intake || r.intake === f.intake) && (!f.platform || r.platform === f.platform) && matchAll(r._text, terms);
+    });
+    rows.sort(function (a, b) {
+      if (f.sort === 'az') return String(a.title).localeCompare(String(b.title));
+      var d = intakeRank(b.intake) - intakeRank(a.intake);
+      if (f.sort === 'oldest') d = -d;
+      if (a.is_official !== b.is_official) return a.is_official ? -1 : 1;
+      return d || (a.sort_order - b.sort_order) || String(a.title).localeCompare(String(b.title));
+    });
+    var filtered = f.q || f.intake || f.platform;
+    if (!rows.length) {
+      return html`<div class="card empty"><h3>${t('no_match')}</h3>
+        <button type="button" class="btn btn-secondary" data-action="reset-filters">${t('reset_filters')}</button></div>`;
+    }
+    return html`${filtered ? html`<p class="result-count" style="margin-bottom:12px">${t('showing_n', { n: rows.length })}</p>` : ''}
+      <div class="grid grid-3">${rows.map(function (r) { return resourceCard(r, { hideContext: true, q: f.q }); })}</div>`;
+  }
+
+  function viewOfficial() {
+    var slug = state.route.c;
+    if (slug) {
+      var c = IX.catBySlug[slug];
+      if (!c) return viewNotFound();
+      var list = IX.byCat[c.id] || [];
+      var desc = L(c, 'description');
+      return html`
+        <section class="container page-head">
+          <nav class="crumbs" aria-label="Breadcrumb">${navLink({ p: 'home' }, t('home'))}<span aria-hidden="true">/</span>${navLink({ p: 'official' }, t('nav_official'))}</nav>
+          <p class="eyebrow" style="margin-top:18px">${t('official_eyebrow')}</p>
+          <h1 dir="auto">${L(c, 'name')}</h1>
+          ${desc ? html`<p class="lead" dir="auto">${desc}</p>` : ''}
+        </section>
+        <section class="container" style="padding-block:24px 64px">
+          ${list.length ? html`<div class="card list-card">${list.map(linkRow)}</div>` : html`<div class="card empty"><h3>${t('no_resources_yet')}</h3></div>`}
+          <div class="notice" style="margin-top:16px">${icon('shield')}<span>${t('official_note')}</span></div>
+        </section>`;
+    }
+    return html`
+      <section class="container page-head">
+        <nav class="crumbs" aria-label="Breadcrumb">${navLink({ p: 'home' }, t('home'))}</nav>
+        <p class="eyebrow" style="margin-top:18px">${t('official_eyebrow')}</p>
+        <h1>${t('official_title')}</h1>
+        <p class="lead" dir="auto">${S('official_intro')}</p>
+      </section>
+      <section class="container" style="padding-block:24px 64px">
+        <div class="grid grid-3">${D.categories.map(collectionCard)}</div>
+        ${IX.general.length ? html`<h2 style="font-size:1.125rem;margin:32px 0 12px">${t('general')}</h2><div class="card list-card">${IX.general.map(linkRow)}</div>` : ''}
+        <div class="notice" style="margin-top:16px">${icon('shield')}<span>${t('official_note')}</span></div>
+      </section>`;
+  }
+
+  function viewAbout() {
+    var s = D.settings;
+    var paras = String(S('welcome') || '').split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(Boolean);
+    return html`
+      <section class="container page-head">
+        <span class="pill">${S('tagline') || t('by_students')}</span>
+        <h1 style="margin-top:16px">${t('about_title')}</h1>
+        <p class="lead">${t('about_lead')}</p>
+      </section>
+      <section class="container" style="padding-block:24px 64px;display:grid;gap:16px;max-width:calc(900px + 2 * var(--gutter))">
+        <div class="card card-pad"><h2 style="font-size:1.25rem">${t('about_what_t')}</h2><p class="prose" style="margin-top:10px">${t('about_what_d')}</p></div>
+        <div class="card card-pad"><h2 style="font-size:1.25rem">${t('about_indep_t')}</h2><p class="prose" style="margin-top:10px" dir="auto">${S('disclaimer')}</p></div>
+        ${paras.length ? html`<div class="card card-pad"><h2 style="font-size:1.25rem">${t('welcome')}</h2><div class="prose" style="margin-top:10px" dir="auto">${paras.map(function (p) { return html`<p>${p}</p>`; })}</div></div>` : ''}
+        <div class="card card-pad" id="contact">
+          <h2 style="font-size:1.25rem">${t('contact_t')}</h2>
+          <p class="prose" style="margin-top:10px">${t('contact_d')}</p>
+          <div class="maint" style="margin-top:18px">
+            <span class="avatar">${initials(s.maintainer_name)}</span>
+            <div><p style="font-weight:600" dir="auto">${state.lang === 'ar' && s.maintainer_name_ar ? s.maintainer_name_ar : s.maintainer_name}</p>
+              <p class="subtle small">${t('maintainer')} · ${S('maintainer_role') || s.maintainer_role}</p></div>
+          </div>
+          ${s.contact_email ? html`<a class="btn btn-primary" style="margin-top:18px" href="mailto:${s.contact_email}">${icon('send', 'icon-sm flip-rtl')}<span class="latin">${s.contact_email}</span></a>` : ''}
+        </div>
+      </section>`;
+  }
+
+  function viewNotFound() {
+    return html`<section class="container" style="padding-block:96px"><div class="card empty">
+      <h3>${t('not_found')}</h3><p>${t('not_found_hint')}</p>${navLink({ p: 'home' }, t('back_home'), 'btn btn-primary')}</div></section>`;
+  }
+
+  function viewBootError() {
+    var code = BOOT.error && BOOT.error.code;
+    return html`<div class="card boot-error"><div class="brand-mark" style="margin:0 auto 16px">UR</div>
+      <h1 style="font-size:1.375rem">UniMAP Resources Hub</h1>
+      <p class="muted" style="margin-top:10px">${t('err_' + (code === 'DB_UNAVAILABLE' ? 'DB_UNAVAILABLE' : 'SERVER_ERROR'))}</p>
+      <button type="button" class="btn btn-secondary" style="margin-top:18px" onclick="location.reload()">${icon('refresh', 'icon-sm')}Retry</button></div>`;
+  }
+
+  // ------------------------------------------------------------------ Render
+  function currentView() {
+    switch (state.route.p) {
+      case 'programme': return viewProgramme();
+      case 'official': return viewOfficial();
+      case 'submit': return PublicViews.submit ? PublicViews.submit.render(ctx) : viewNotFound();
+      case 'about': return viewAbout();
+      case 'search':
+      case 'home': return viewHome();
+      default: return viewNotFound();
+    }
+  }
+
+  function render() {
+    var app = $('#app');
+    if (!D) { setHtml(app, viewBootError()); return; }
+    setHtml(app, html`${header()}${announcement()}<main id="main" tabindex="-1">${currentView()}</main>${footer()}`);
+    document.title = pageTitle();
+    if (state.route.p === 'submit' && PublicViews.submit) PublicViews.submit.mount(ctx);
+  }
+
+  function pageTitle() {
+    var base = D.settings.site_name || 'UniMAP Resources Hub';
+    var r = state.route;
+    if (r.p === 'programme' && IX.progBySlug[r.s]) return L(IX.progBySlug[r.s], 'name') + ' — ' + base;
+    if (r.p === 'official') return (r.c && IX.catBySlug[r.c] ? L(IX.catBySlug[r.c], 'name') : t('official_title')) + ' — ' + base;
+    if (r.p === 'submit') return t('submit_title') + ' — ' + base;
+    if (r.p === 'about') return t('about_title');
+    return base;
+  }
+
+  function updateHomeBody() {
+    var body = $('#home-body');
+    if (body) setHtml(body, homeBody());
+    var clear = $('[data-action="clear-search"]');
+    if (clear) clear.classList.toggle('hidden', !state.homeQuery);
+    var hero = $('.hero');
+    if (hero) hero.classList.toggle('is-searching', !!state.homeQuery.trim());
+  }
+
+  var syncQueryToUrl = UI.debounce(function () {
+    var route = { p: state.homeQuery.trim() ? 'search' : 'home', q: state.homeQuery.trim() || undefined };
+    state.route = route;
+    try { google.script.history.replace(route, paramsFor(route)); } catch (e) {}
+  }, 500);
+
+  // ------------------------------------------------------------------ Events (delegated)
+  function onClick(e) {
+    var a = e.target.closest('a[data-route]');
+    if (a && !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      var route = {};
+      try { route = JSON.parse(a.getAttribute('data-route')); } catch (err) {}
+      navigate(route);
+      return;
+    }
+    var b = e.target.closest('[data-action], [data-faculty], [data-platform]');
+    if (!b) return;
+    if (b.hasAttribute('data-faculty')) { state.faculty = b.getAttribute('data-faculty'); updateHomeBody(); return; }
+    if (b.hasAttribute('data-platform')) {
+      state.filters.platform = b.getAttribute('data-platform');
+      $$('[data-platform]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+      updateProgList(); return;
+    }
+    switch (b.getAttribute('data-action')) {
+      case 'lang': setLang(state.lang === 'ar' ? 'en' : 'ar', true); break;
+      case 'menu': state.menuOpen = !state.menuOpen; render(); break;
+      case 'theme': toggleTheme(); break;
+      case 'welcome': state.welcomeOpen = !state.welcomeOpen; updateHomeBody(); break;
+      case 'clear-search': {
+        state.homeQuery = ''; var inp = $('#home-search'); if (inp) { inp.value = ''; inp.focus(); }
+        updateHomeBody(); syncQueryToUrl(); break;
+      }
+      case 'more-results': state.searchLimit += 60; updateHomeBody(); break;
+      case 'reset-filters': state.filters = { q: '', intake: '', platform: '', sort: state.filters.sort }; render(); break;
+      case 'notes': {
+        var n = b.parentNode.querySelector('.notes');
+        if (n) { n.classList.toggle('open'); b.textContent = n.classList.contains('open') ? t('read_less') : t('show_more_notes'); }
+        break;
+      }
+      case 'copy':
+        UI.copyText(b.getAttribute('data-url')).then(function (ok) { UI.toast(ok ? t('copied') : t('copy_failed'), ok ? 'ok' : 'error'); });
+        break;
+    }
+  }
+
+  function updateProgList() {
+    var p = IX.progBySlug[state.route.s];
+    var box = $('#prog-list');
+    if (p && box) setHtml(box, programmeList(IX.byProg[p.id] || []));
+  }
+
+  function onInput(e) {
+    if (e.target.id === 'home-search') {
+      state.homeQuery = e.target.value.slice(0, 120);
+      state.searchLimit = 60;
+      updateHomeBody();
+      syncQueryToUrl();
+    } else if (e.target.id === 'prog-search') {
+      state.filters.q = e.target.value.slice(0, 120);
+      updateProgList();
+    }
+  }
+  function onChange(e) {
+    if (e.target.id === 'f-intake') { state.filters.intake = e.target.value; updateProgList(); }
+    if (e.target.id === 'f-sort') { state.filters.sort = e.target.value; updateProgList(); }
+  }
+
+  function toggleTheme() {
+    var root = document.documentElement;
+    var current = root.getAttribute('data-theme') ||
+      (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    var next = current === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    UI.local.set('urh_theme', next);
+  }
+
+  // Context object shared with PublicSubmit.html
+  var ctx = {
+    t: t, L: L, S: S, state: state, navigate: navigate, navLink: navLink,
+    get data() { return D; }, get index() { return IX; }
+  };
+
+  function start() {
+    var route = window.__ROUTE__ || { p: 'home' };
+    var saved = UI.local.get('urh_lang');
+    if (BOOT.ok) { D = BOOT.data; IX = buildIndex(); }
+    setLang(route.lang || saved || (D && D.settings.default_language) || 'en', false);
+    state.route = { p: route.p || 'home', s: route.s || '', c: route.c || '', q: route.q || '' };
+    if (state.route.p === 'search' || state.route.p === 'home') state.homeQuery = route.q || '';
+    document.addEventListener('click', onClick);
+    document.addEventListener('input', onInput);
+    document.addEventListener('change', onChange);
+    try {
+      google.script.history.setChangeHandler(function (ev) {
+        var r = ev && ev.state ? ev.state : { p: (ev && ev.location && ev.location.parameter && ev.location.parameter.p) || 'home' };
+        state.route = r;
+        state.homeQuery = r.q || '';
+        render();
+      });
+    } catch (e) {}
+    render();
+  }
+
+  return { start: start, ctx: ctx, render: render };
+})();
+</script>
