@@ -316,7 +316,7 @@
     var btn = $('button[type="submit"]', form) || $('[data-save]', form);
     UI.setBusy(btn, true, 'Saving…');
     ctx.call('account.changePassword', { current_password: v.current_password, new_password: v.new_password }).then(function (d) {
-      if (d && d.token) { ctx.S.token = d.token; UI.session.set('urh_admin_token', d.token); }
+      if (d && d.token && window.__AUTH_MODE__ !== 'cookie') { ctx.S.token = d.token; UI.session.set('urh_admin_token', d.token); }
       if (d && d.admin) ctx.S.me = d.admin;
       UI.toast('Password updated');
       done && done();

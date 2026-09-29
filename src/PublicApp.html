@@ -173,7 +173,7 @@ window.PublicApp = (function () {
           ${navLink({ p: 'submit' }, t('nav_submit'))}
           ${navLink({ p: 'about' }, t('nav_about'))}
           <button type="button" data-action="theme" aria-label="${t('theme_toggle')}">${t('theme_toggle')}</button>
-          <a href="${(APP_URL || '') + '?p=admin'}" target="_top" rel="nofollow">${t('footer_admin')}</a>
+          <a href="${window.__ADMIN_URL__ || ((APP_URL || '') + '?p=admin')}" target="_top" rel="nofollow">${t('footer_admin')}</a>
         </div>
       </div>
     </footer>`;
@@ -490,7 +490,7 @@ window.PublicApp = (function () {
     return html`<div class="card boot-error"><div class="brand-mark" style="margin:0 auto 16px">UR</div>
       <h1 style="font-size:1.375rem">UniMAP Resources Hub</h1>
       <p class="muted" style="margin-top:10px">${t('err_' + (code === 'DB_UNAVAILABLE' ? 'DB_UNAVAILABLE' : 'SERVER_ERROR'))}</p>
-      <button type="button" class="btn btn-secondary" style="margin-top:18px" onclick="location.reload()">${icon('refresh', 'icon-sm')}Retry</button></div>`;
+      <button type="button" class="btn btn-secondary" style="margin-top:18px" data-action="reload">${icon('refresh', 'icon-sm')}Retry</button></div>`;
   }
 
   // ------------------------------------------------------------------ Render
@@ -559,6 +559,7 @@ window.PublicApp = (function () {
     }
     switch (b.getAttribute('data-action')) {
       case 'lang': setLang(state.lang === 'ar' ? 'en' : 'ar', true); break;
+      case 'reload': location.reload(); break;
       case 'menu': state.menuOpen = !state.menuOpen; render(); break;
       case 'theme': toggleTheme(); break;
       case 'welcome': state.welcomeOpen = !state.welcomeOpen; updateHomeBody(); break;
@@ -619,6 +620,7 @@ window.PublicApp = (function () {
   function start() {
     var route = window.__ROUTE__ || { p: 'home' };
     var saved = UI.local.get('urh_lang');
+    BOOT = window.__BOOT__ || BOOT;
     if (BOOT.ok) { D = BOOT.data; IX = buildIndex(); }
     setLang(route.lang || saved || (D && D.settings.default_language) || 'en', false);
     state.route = { p: route.p || 'home', s: route.s || '', c: route.c || '', q: route.q || '' };
@@ -637,6 +639,29 @@ window.PublicApp = (function () {
     render();
   }
 
-  return { start: start, ctx: ctx, render: render };
+  /**
+   * Replaces the data with a newer bundle (used by the Cloudflare frontend, which first renders a
+   * locally cached copy and then refreshes). Re-renders only if the content actually changed.
+   */
+  function refresh(bundle) {
+    if (!bundle || !bundle.ok || !bundle.data) return false;
+    var strip = function (d) { var c = Object.assign({}, d); delete c.generated_at; return JSON.stringify(c); };
+    if (D && strip(D) === strip(bundle.data)) return false;
+    var hadData = !!D;
+    BOOT = bundle; D = bundle.data; IX = buildIndex();
+    var active = document.activeElement, activeId = active && active.id, sel = null;
+    try { sel = active && active.selectionStart; } catch (e) {}
+    var y = window.scrollY;
+    if (!hadData) setLang(UI.local.get('urh_lang') || D.settings.default_language || 'en', false);
+    render();
+    if (hadData) window.scrollTo(0, y);
+    if (activeId) {
+      var el = document.getElementById(activeId);
+      if (el && el.focus) { el.focus(); try { if (sel !== null) el.setSelectionRange(sel, sel); } catch (e) {} }
+    }
+    return true;
+  }
+
+  return { start: start, ctx: ctx, render: render, refresh: refresh };
 })();
 </script>

@@ -4,3 +4,10 @@ node_modules/
 *.log
 .DS_Store
 test-results/
+# Cloudflare
+cloudflare/dist/
+cloudflare/.wrangler/
+cloudflare/.dev.vars
+.dev.vars
+.env
+.env.*

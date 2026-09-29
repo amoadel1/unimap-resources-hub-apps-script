@@ -8,6 +8,8 @@
  *   adminLogin(email, password)         → returns a session token
  *   adminLogout(token)
  *   adminApi(token, action, payload)    → every admin operation (authorised per call)
+ *   doPost(e)                           → JSON API for the Cloudflare frontend (Api.gs);
+ *                                         requires the PROXY_SHARED_SECRET script property
  * Setup.gs also exposes owner-only maintenance functions that refuse to run
  * unless executed by the script owner from the Apps Script editor.
  */

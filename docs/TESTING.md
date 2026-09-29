@@ -11,7 +11,8 @@ The real `src/` files run in Node on top of `tests/gas-mock.js`, a local emulati
 
 ```bash
 npm install          # installs Playwright (browser tests)
-npm test             # all tests
+npm test             # all tests (builds the Cloudflare frontend first)
+npm run test:cf      # Cloudflare end-to-end tests (real Worker in wrangler dev + real Apps Script code)
 npm run test:server  # backend only (fast, no browser)
 npm run test:e2e     # browser tests (Chromium, phone / tablet / desktop sizes)
 npm run dev          # run the app locally at http://localhost:8787
@@ -95,6 +96,16 @@ npm run dev          # run the app locally at http://localhost:8787
   - programme create, duplicate error and hide, reflected publicly;
   - a stored XSS attempt is shown as text and never executed;
   - every dashboard page fits a phone screen, and settings saved from a phone appear publicly.
+
+**Cloudflare** (`cloudflare.e2e.test.js`): see [CLOUDFLARE.md](CLOUDFLARE.md#testing). Also, `server.test.js` covers the `doPost` API:
+- it is disabled without a secret, and bad or short secrets are refused;
+- only allow-listed actions run;
+- its data is identical to `getPublicData`;
+- per-IP submission and login limits apply;
+- admin roles are enforced;
+- the HTML Service site is unchanged.
+
+For the Cloudflare site, also run the [real-world checklist in CLOUDFLARE.md](CLOUDFLARE.md#real-world-checklist-after-deployment), including the multi-Google-account test.
 
 ## Manual checklist for the real deployment
 

@@ -203,6 +203,11 @@ function login_(email, password) {
   var failKey = 'lf:' + sha256Hex_(email).slice(0, 40);
   var globalKey = 'lf:global';
 
+  var ipHash = apiClientIpHash_();
+  var ipFailKey = ipHash ? 'lf:ip:' + ipHash.slice(0, 40) : null;
+  if (ipFailKey && cacheCount_(ipFailKey) >= APP.LOGIN_IP_MAX_FAILS) {
+    throw appError_('LOGIN_LOCKED', 'Too many failed attempts. Please wait ' + APP.LOGIN_LOCK_MINUTES + ' minutes and try again.');
+  }
   if (cacheCount_(failKey) >= APP.LOGIN_MAX_FAILS) {
     throw appError_('LOGIN_LOCKED', 'Too many failed attempts. Please wait ' + APP.LOGIN_LOCK_MINUTES + ' minutes and try again.');
   }
@@ -215,6 +220,7 @@ function login_(email, password) {
   if (!admin || !ok || !admin.is_active || !ROLES[admin.role]) {
     cacheIncr_(failKey, APP.LOGIN_LOCK_MINUTES * 60);
     cacheIncr_(globalKey, APP.LOGIN_LOCK_MINUTES * 60);
+    if (ipFailKey) cacheIncr_(ipFailKey, APP.LOGIN_LOCK_MINUTES * 60);
     Utilities.sleep(400);
     throw appError_('INVALID_LOGIN', 'Incorrect email or password.');
   }

@@ -11,6 +11,8 @@
  *   recoverOwnerAccess()  Emergency: gives YOUR Google account's admin a new temporary
  *                         password (creates an owner admin if none exists for you).
  *   clearAppCache()       Clears cached public data (only needed after manual sheet edits).
+ *   generateProxySecret() Creates/rotates PROXY_SHARED_SECRET, which enables the doPost API
+ *                         used by the Cloudflare frontend (see docs/CLOUDFLARE.md).
  *
  * Security: because these functions do not end with "_", Apps Script technically
  * allows the browser to call them. assertEditor_() therefore refuses to run unless
@@ -283,4 +285,21 @@ function clearAppCache() {
   assertEditor_();
   invalidatePublicCache_();
   Logger.log('Public cache cleared.');
+}
+
+/**
+ * Creates (or rotates) the shared secret between the Cloudflare Worker and doPost.
+ * The value is NOT written to the log: copy it from
+ * Project Settings → Script Properties → PROXY_SHARED_SECRET into the Cloudflare secret
+ * GAS_PROXY_SECRET. Rotating it immediately disconnects the Cloudflare site until the
+ * Cloudflare secret is updated too. The HTML Service website is not affected.
+ */
+function generateProxySecret() {
+  assertEditor_();
+  var secret = newToken_() + newToken_();
+  PropertiesService.getScriptProperties().setProperty(APP.PROP_PROXY_SECRET, secret);
+  logActivity_({ email: Session.getEffectiveUser().getEmail() }, 'system.proxy_secret', 'system', '', 'Generated a new Cloudflare proxy secret');
+  Logger.log('A new PROXY_SHARED_SECRET (' + secret.length + ' characters) was saved in Script Properties.');
+  Logger.log('Copy it from Project Settings → Script Properties, then run in the cloudflare/ folder:');
+  Logger.log('  npx wrangler secret put GAS_PROXY_SECRET');
 }

@@ -59,7 +59,10 @@ function submissionCreate_(form) {
   var perSite = Math.max(5, toNum_(settings.rate_limit_global_per_hour, 60));
   var clientKey = clientRef ? 'rl:c:' + clientRef + ':' + hour : null;
   var globalKey = 'rl:g:' + hour;
-  if ((clientKey && cacheCount_(clientKey) >= perClient) || cacheCount_(globalKey) >= perSite) {
+  var ipHash = apiClientIpHash_(); // only present for requests coming through the Cloudflare API
+  var ipKey = ipHash ? 'rl:i:' + ipHash.slice(0, 40) + ':' + hour : null;
+  if ((clientKey && cacheCount_(clientKey) >= perClient) || cacheCount_(globalKey) >= perSite ||
+      (ipKey && cacheCount_(ipKey) >= APP.RATE_LIMIT_IP_PER_HOUR)) {
     throw appError_('RATE_LIMITED', 'Too many submissions. Please try again later.');
   }
 
@@ -79,6 +82,7 @@ function submissionCreate_(form) {
     });
 
     if (clientKey) cacheIncr_(clientKey, 3700);
+    if (ipKey) cacheIncr_(ipKey, 3700);
     cacheIncr_(globalKey, 3700);
 
     var sub = db_insert_('Submissions', {

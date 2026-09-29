@@ -155,6 +155,8 @@
     var api = { el: overlay, body: $('.sheet-body', overlay), close: close };
     openSheets.push(api);
     setTimeout(function () {
+      // Don't steal focus if the user has already moved into the dialog.
+      if (overlay.contains(document.activeElement)) return;
       var f = $('[autofocus]', overlay) ||
         (opts.noAutoFocus ? null : $('input:not([type=hidden]):not([disabled]), select, textarea, button:not([data-close])', $('.sheet-body', overlay))) ||
         $('[data-close]', overlay);

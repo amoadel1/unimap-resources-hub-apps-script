@@ -40,6 +40,8 @@ function createDevApp(opts = {}) {
   })();
   </script>`;
 
+  const echoes = new Map();
+  if (opts.proxySecret) m.props.PROXY_SHARED_SECRET = opts.proxySecret;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'POST' && url.pathname === '/rpc') {
@@ -58,6 +60,38 @@ function createDevApp(opts = {}) {
           res.end(JSON.stringify(out === undefined ? {} : out));
         }, latency);
       });
+      return;
+    }
+    // ---- Emulation of the Apps Script web app HTTP API (doPost) including Google's
+    //      documented redirect to a one-time script.googleusercontent.com URL.
+    if (req.method === 'POST' && url.pathname === '/exec') {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        m.newExecution();
+        let content;
+        try {
+          const out = m.context.doPost({ postData: { contents: body, type: req.headers['content-type'] || '' }, parameter: {} });
+          content = out.getContent();
+        } catch (e) {
+          content = '<html><body>Script error</body></html>';
+        }
+        const key = require('crypto').randomBytes(12).toString('hex');
+        echoes.set(key, content);
+        setTimeout(() => {
+          res.writeHead(302, { Location: 'http://localhost:' + (req.socket.localPort) + '/echo?user_content_key=' + key });
+          res.end();
+        }, latency);
+      });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/echo') {
+      const key = url.searchParams.get('user_content_key');
+      const content = echoes.get(key);
+      echoes.delete(key); // one-time URL, like Google's
+      if (content === undefined) { res.writeHead(404); res.end('Not found'); return; }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(content);
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/exec')) {
@@ -79,7 +113,7 @@ function createDevApp(opts = {}) {
 
 if (require.main === module) {
   const port = parseInt(process.argv[2] || '8787', 10);
-  const app = createDevApp({ latency: 120 });
+  const app = createDevApp({ latency: 120, proxySecret: process.env.GAS_PROXY_SECRET || 'local-development-secret-0123456789abcdef0123456789' });
   app.server.listen(port, () => {
     console.log('Dev server on http://localhost:' + port);
     console.log('Owner login: owner@example.com / ' + app.tempPassword);

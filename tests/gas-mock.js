@@ -194,6 +194,14 @@ function createMock(opts = {}) {
   };
   const ScriptApp = { getService: () => ({ getUrl: () => opts.url || 'https://script.google.com/macros/s/TESTDEPLOYMENT/exec' }) };
   const Logger = { log: (m) => { logs.push(String(m)); } };
+  const ContentService = {
+    MimeType: { JSON: 'application/json', TEXT: 'text/plain' },
+    createTextOutput(text) {
+      const o = { text: String(text), mime: 'text/plain', getContent: () => o.text, getMimeType: () => o.mime,
+        setMimeType: (m) => { o.mime = m; return o; } };
+      return o;
+    }
+  };
 
   // ------------------------------------------------------------------ HtmlService
   const srcDir = opts.srcDir || path.join(__dirname, '..', 'src');
@@ -248,7 +256,7 @@ function createMock(opts = {}) {
   // ------------------------------------------------------------------ Context
   const sandbox = {
     SpreadsheetApp, CacheService, LockService, PropertiesService, Utilities, Session,
-    ScriptApp, Logger, HtmlService, console, JSON, Math, Date
+    ScriptApp, Logger, HtmlService, ContentService, console, JSON, Math, Date
   };
   context = vm.createContext(sandbox);
   const files = fs.readdirSync(srcDir).filter((f) => f.endsWith('.gs')).sort();
@@ -260,7 +268,7 @@ function createMock(opts = {}) {
     if (typeof fnName !== 'string' || /_$/.test(fnName) || typeof context[fnName] !== 'function') {
       throw new Error('Script function not found: ' + fnName);
     }
-    vm.runInContext('DB_SS_ = null; DB_MEMO_ = {}; DB_DELTA_ = null; DB_LOCK_DEPTH_ = 0; SETTINGS_MEMO_ = null; DB_LOG_HEADER_ = null;', context);
+    vm.runInContext('DB_SS_ = null; DB_MEMO_ = {}; DB_DELTA_ = null; DB_LOCK_DEPTH_ = 0; SETTINGS_MEMO_ = null; DB_LOG_HEADER_ = null; API_CLIENT_ = null;', context);
     const safeArgs = JSON.parse(JSON.stringify(args));
     const result = context[fnName](...safeArgs);
     return result === undefined ? undefined : JSON.parse(JSON.stringify(result));
@@ -275,7 +283,13 @@ function createMock(opts = {}) {
     resetStats() { Object.keys(stats).forEach((k) => { stats[k] = 0; }); },
     /** Simulates a brand-new server execution (globals persist in Node, not in GAS). */
     newExecution() {
-      vm.runInContext('DB_SS_ = null; DB_MEMO_ = {}; DB_DELTA_ = null; DB_LOCK_DEPTH_ = 0; SETTINGS_MEMO_ = null; DB_LOG_HEADER_ = null;', context);
+      vm.runInContext('DB_SS_ = null; DB_MEMO_ = {}; DB_DELTA_ = null; DB_LOCK_DEPTH_ = 0; SETTINGS_MEMO_ = null; DB_LOG_HEADER_ = null; API_CLIENT_ = null;', context);
+    },
+    /** Simulates an HTTP POST to the web app (doPost) and returns the parsed JSON body. */
+    post(body) {
+      this.newExecution();
+      const out = context.doPost({ postData: { contents: typeof body === 'string' ? body : JSON.stringify(body), type: 'application/json' }, parameter: {} });
+      return { mime: out.getMimeType(), json: JSON.parse(out.getContent()) };
     }
   };
 }

@@ -1,0 +1,5 @@
+# Local development only (copy to .dev.vars — it is git-ignored). Never use these values in production.
+GAS_API_URL=http://localhost:8788/exec
+GAS_PROXY_SECRET=local-development-secret-0123456789abcdef0123456789
+IP_HASH_SECRET=local-ip-hash-secret
+DEV_BACKEND=1

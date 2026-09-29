@@ -11,13 +11,14 @@
 
 var APP = {
   NAME: 'UniMAP Resources Hub',
-  VERSION: '2.0.0',
+  VERSION: '2.1.0',
   SCHEMA_VERSION: 1,
 
   // Script Properties keys (server-side only, never sent to the browser)
   PROP_SPREADSHEET_ID: 'SPREADSHEET_ID',
   PROP_PEPPER: 'AUTH_PEPPER',
   PROP_INITIAL_ADMIN_EMAIL: 'INITIAL_ADMIN_EMAIL',
+  PROP_PROXY_SECRET: 'PROXY_SHARED_SECRET', // enables the doPost API used by Cloudflare (Api.gs)
 
   // Cache keys
   CACHE_PUBLIC: 'pub_bundle_v1',
@@ -29,6 +30,8 @@ var APP = {
   LOGIN_MAX_FAILS: 5,
   LOGIN_LOCK_MINUTES: 15,
   LOGIN_GLOBAL_MAX_FAILS: 40, // across all emails, per 15 minutes
+  LOGIN_IP_MAX_FAILS: 20,     // per hashed client IP (Cloudflare API only), per 15 minutes
+  RATE_LIMIT_IP_PER_HOUR: 20, // submissions per hashed client IP (Cloudflare API only); campus Wi-Fi shares IPs
 
   // Limits
   MAX_ACTIVITY_READ: 300,

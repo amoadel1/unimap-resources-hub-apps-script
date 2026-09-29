@@ -1,0 +1,16 @@
+{
+  "name": "unimap-resources-hub-cloudflare",
+  "version": "2.1.0",
+  "description": "Cloudflare Worker + static frontend for UniMAP Resources Hub (backend: Google Apps Script + Google Sheets).",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && wrangler dev --port 8787",
+    "deploy": "node build.mjs && wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^4.144.0"
+  },
+  "private": true
+}

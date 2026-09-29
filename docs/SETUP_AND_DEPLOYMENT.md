@@ -30,7 +30,7 @@ In the editor's **Files** panel:
 
 1. Delete the default `Code.gs` content. You will replace it.
 2. For every file in `src/`, create a file with **exactly the same name, without the extension**, and paste the full content:
-   - **Script files:** click **+ → Script** and type the name without `.gs`. The files are `Admin`, `Admins`, `Auth`, `Categories`, `Code`, `Config`, `Database`, `Migrate`, `Platforms`, `Programmes`, `Resources`, `Seed`, `Settings`, `Setup`, `Submissions`, `Utils`.
+   - **Script files:** click **+ → Script** and type the name without `.gs`. The files are `Admin`, `Admins`, `Api`, `Auth`, `Categories`, `Code`, `Config`, `Database`, `Migrate`, `Platforms`, `Programmes`, `Resources`, `Seed`, `Settings`, `Setup`, `Submissions`, `Utils`.
    - **HTML files:** click **+ → HTML** and type the name without `.html`. The files are `Admin`, `AdminApp`, `AdminForms`, `AdminStyles`, `AdminViews`, `I18n`, `Index`, `PublicApp`, `PublicSubmit`, `Styles`, `Ui`.
    - **`appsscript.json`:** open it and replace its content with `src/appsscript.json`.
 3. Click **Save project** (the disk icon, or Ctrl/Cmd + S).
@@ -176,6 +176,10 @@ Use the checklist in [TESTING.md](TESTING.md#manual-checklist-for-the-real-deplo
 | Something looks wrong with the sheets | Run **`validateSetup`**, then **`setup`** to repair missing columns |
 | "The database is not available yet" on the site | `setup` was not run, or the `SPREADSHEET_ID` script property points to a deleted sheet. Run `setup`. |
 | Moved to a new Google account | Make a copy of the spreadsheet (this copies the bound script too), run `setup` in the copy, and deploy again. Passwords will need resetting, because the pepper lives in Script Properties. |
+
+## Cloudflare frontend
+
+To serve the site from Cloudflare (this fixes the multi-Google-account problem), follow [CLOUDFLARE.md](CLOUDFLARE.md). It uses a **separate** API deployment and leaves this production deployment untouched.
 
 ## Using the old domain (optional)
 

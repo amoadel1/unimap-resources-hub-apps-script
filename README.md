@@ -6,6 +6,10 @@ UniMAP Resources Hub is an **independent student initiative** that helps student
 
 **This is not an official UniMAP system.** It is not owned, operated or endorsed by UniMAP. The "Official resources" section only links to UniMAP's own public websites (academic guide, programme structures, course lists, timetables). The hub itself is still a student project.
 
+> **UniMAP Resources Hub is an independent student-built platform and is not an official UniMAP system.**
+
+**Version 2.1 (Cloudflare frontend).** Google does not support Apps Script web apps for people signed in to several Google accounts at once: they can land on a `/u/2/` URL and see a Drive "Page not found". The public site and the dashboard are therefore also served from **Cloudflare**, which calls Apps Script server-to-server. Google Sheets remains the database, and the original Apps Script web app stays available as the fallback. Details: [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md).
+
 This repository contains version 2 of the hub. It was rebuilt on **Google Apps Script + Google Sheets** so the platform can run without Supabase or Vercel and be managed completely from an admin dashboard. The original Next.js + Supabase version stays in its own repository ([amoadel1/unimap-resources-hub](https://github.com/amoadel1/unimap-resources-hub)) as a reference, and it was not modified.
 
 About the author: I am an Electrical Engineering student at UniMAP. I designed and developed this initiative with the help of AI tools. It is a student project, maintained in my free time, not the work of a professional software team.
@@ -92,10 +96,21 @@ Each resource belongs to a programme (student resources) or is marked **official
 | Caching / sessions | Apps Script `CacheService` |
 | Concurrency | Apps Script `LockService` |
 | Secrets | Apps Script `PropertiesService` (Script Properties) |
-| Hosting | Apps Script Web App (versioned deployment) |
+| Hosting | Cloudflare Workers + static assets (public site and dashboard). The Apps Script Web App (versioned deployment) is the backend API and the fallback site. |
 | Optional tooling | `clasp` for syncing with GitHub; Node + Playwright for local tests |
 
 ## Architecture
+
+**Production path (v2.1):**
+
+```
+Browser ──same origin──▶ Cloudflare Worker (static site + /api/* proxy, HttpOnly admin cookie)
+                              │ server-to-server, shared secret, allow-listed actions only
+                              ▼
+                         Apps Script doPost (Api.gs) ──▶ same backend code ──▶ Google Sheets
+```
+
+**Apps Script web app** (the original, still working, used as the fallback):
 
 ```
 Browser (HTML Service page)                    Apps Script server                         Google Sheet
@@ -172,7 +187,13 @@ See **[docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)**. The most common tasks:
   - Failed logins are throttled and lock the account for a while.
   - Temporary passwords must be changed at first login.
 - **Authorization on every call.** The admin's current role and active status are re-read from the sheet each time. The browser's view of roles only hides buttons.
-- **Small public surface.** Only six functions can be called from the browser. Owner-only maintenance functions refuse to run for web visitors. Private functions end with `_`, which Apps Script blocks from `google.script.run`.
+- **Small public surface.** On Apps Script, only six functions can be called from the browser, plus `doPost`, which stays disabled until a 32+ character shared secret is configured. Owner-only maintenance functions refuse to run for web visitors. Private functions end with `_`, which Apps Script blocks from `google.script.run`.
+- **Cloudflare frontend.**
+  - The Worker has fixed routes only (it is not an open proxy) and follows redirects only to `script.googleusercontent.com`.
+  - It checks the Origin (CSRF) and limits request size.
+  - The admin session lives in an `HttpOnly; Secure; SameSite=Strict` cookie that page JavaScript never sees.
+  - The CSP allows no inline scripts.
+  - Per-IP rate limits use a hashed IP.
 - **Input validation and sanitisation on the server.** This covers lengths, allowed values, control and bidi-override characters, emails and numbers.
 - **Strict URL validation.** Only `http(s)` links are accepted. `javascript:`, `data:`, `file:`, credentials in URLs, IP addresses, localhost/intranet hosts, quotes and whitespace are rejected.
 - **Formula-injection protection.** Any value starting with `= + - @` is stored as plain text in Google Sheets.
@@ -186,8 +207,17 @@ Details and the threat model: [docs/ARCHITECTURE.md#security](docs/ARCHITECTURE.
 
 ## Limitations
 
-- **Google banner and URL.** Google shows a small notice at the top of Apps Script web apps: *"This application was created by a Google Apps Script user."* It cannot be removed on personal accounts. The URL is a long `script.google.com/macros/s/…/exec` address. A custom domain can only redirect to it.
-- **No IP-based rate limiting.** Apps Script cannot see visitors' IP addresses, so rate limits are per browser and site-wide. A determined spammer can bypass the per-browser limit, but the site-wide cap and the review queue still protect the public site.
+- **Google banner, URL and multi-login (Apps Script site only).** On the original Apps Script site:
+  - Google shows a notice: *"This application was created by a Google Apps Script user."*
+  - The URL is a long `script.google.com/…/exec` address.
+  - Multi-account browsers can hit Google's `/u/N/` problem.
+
+  The Cloudflare frontend avoids all three.
+- **Cloudflare free plan.**
+  - 100,000 `/api/*` requests per day; static pages are unlimited.
+  - No inactivity pause is documented (see [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md#cloudflare-free-plan-inactivity-and-limits)).
+  - Public changes can take up to about 60 s to appear on every Cloudflare instance.
+- **Rate limiting by IP only on Cloudflare.** Apps Script cannot see IP addresses. On the Cloudflare site the Worker adds per-IP limits (using a hashed IP). The fallback Apps Script site only has per-browser and site-wide limits.
 - **Speed.** Each dashboard action is one round trip to Google, typically 0.5–2 seconds. Public pages load quickly because their data is embedded and cached. The first request after a quiet period can be slower (cold start).
 - **Scale.** Google Sheets comfortably handles thousands of resources. The design reads each sheet once per request and caches public data. For tens of thousands of rows, a real database would be more suitable.
 - **Sessions can end early.** Sessions live in `CacheService`, which Google may clear early, so an admin occasionally has to sign in again.
@@ -200,6 +230,11 @@ Details and the threat model: [docs/ARCHITECTURE.md#security](docs/ARCHITECTURE.
 
 ```
 unimap-resources-hub-apps-script/
+├── cloudflare/          ← Cloudflare Worker + build of the static frontend (from src/*.html)
+│   ├── src/worker.js    ← /api/* proxy (allow-listed routes, cookie sessions)
+│   ├── web/             ← google.script adapter, boot scripts, _headers (CSP), favicon
+│   ├── build.mjs        ← generates dist/ from ../src
+│   └── wrangler.jsonc   ← Worker config (no secrets)
 ├── src/                 ← everything that goes into the Apps Script project
 │   ├── appsscript.json
 │   ├── *.gs             ← server code (one module per concern)
@@ -207,20 +242,23 @@ unimap-resources-hub-apps-script/
 ├── tests/
 │   ├── gas-mock.js      ← local emulation of SpreadsheetApp, CacheService, LockService…
 │   ├── dev-server.js    ← runs the real app locally at http://localhost:8787
-│   ├── server.test.js   ← backend integration tests
-│   └── e2e.test.js      ← browser tests (Playwright)
+│   ├── server.test.js   ← backend integration tests (incl. doPost API)
+│   ├── e2e.test.js      ← browser tests of the Apps Script site (Playwright)
+│   └── cloudflare.e2e.test.js ← browser tests through the real Worker (wrangler dev)
 ├── docs/
 ├── .clasp.json.example
 └── package.json
 ```
 
 - **Run locally:** `npm install && npm run dev`, then open `http://localhost:8787` (and `/?p=admin`). The temporary owner password is printed in the terminal.
-- **Run the tests:** `npm test` (38 backend tests + 13 browser tests).
+- **Run the tests:** `npm test` runs 44 backend tests, 13 Apps Script UI tests and 13 Cloudflare end-to-end tests.
+- **Run the Cloudflare version locally:** `npm run dev:cf`, then open `http://localhost:8787`.
 - **Sync with Apps Script (optional):** use `clasp`. See [docs/SETUP_AND_DEPLOYMENT.md#option-b--clasp-recommended-for-github](docs/SETUP_AND_DEPLOYMENT.md#option-b--clasp-recommended-for-github).
 - **Branch workflow:** make changes on a branch, run `npm test`, then `clasp push`. Test with **Deploy → Test deployments**, then update the production deployment with a **new version**.
 
 ## Documentation index
 
+- [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md): Cloudflare frontend, including architecture, deployment, secrets, the free-plan and inactivity analysis, testing, recovery and troubleshooting.
 - [docs/SETUP_AND_DEPLOYMENT.md](docs/SETUP_AND_DEPLOYMENT.md): create the project, run setup, authorize, deploy and update.
 - [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md): day-to-day administration.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code structure, data model, caching, security.

@@ -760,3 +760,110 @@ test('importFromSupabase migrates live data idempotently', () => {
   assert.equal(env.rows('Submissions')[0].programme_id, dip.id);
   assert.throws(() => env.m.run('importFromSupabase'), /script owner/);
 });
+
+// ============================================================================ doPost API (Cloudflare)
+const SECRET = 'x'.repeat(8) + crypto.randomBytes(24).toString('hex');
+function apiEnv() {
+  const env = fresh();
+  env.m.props.PROXY_SHARED_SECRET = SECRET;
+  env.post = (action, payload, extra) => env.m.post(Object.assign({ secret: SECRET, action, payload, client: { ip_hash: 'ab'.repeat(16) } }, extra || {})).json;
+  return env;
+}
+
+test('doPost API is disabled until the shared secret is configured, and rejects bad secrets', () => {
+  const env = fresh();
+  const r = env.m.post({ secret: 'whatever', action: 'public.data' });
+  assert.equal(r.mime, 'application/json');
+  assert.equal(r.json.error.code, 'API_DISABLED');
+  env.m.props.PROXY_SHARED_SECRET = 'short';
+  assert.equal(env.m.post({ secret: 'short', action: 'public.data' }).json.error.code, 'API_DISABLED', 'secrets shorter than 32 chars are refused');
+  env.m.props.PROXY_SHARED_SECRET = SECRET;
+  for (const bad of [{ action: 'public.data' }, { secret: SECRET.slice(0, -1), action: 'public.data' }, { secret: SECRET + 'x', action: 'public.data' }, { secret: 123, action: 'public.data' }]) {
+    assert.equal(env.m.post(bad).json.error.code, 'FORBIDDEN');
+  }
+  assert.equal(env.m.post('not json').json.error.code, 'BAD_REQUEST');
+  assert.equal(env.m.post('x'.repeat(70000)).json.error.code, 'BAD_REQUEST');
+  assert.equal(env.m.post({ secret: SECRET, action: 'setup' }).json.error.code, 'NOT_FOUND', 'only allow-listed actions');
+  assert.equal(env.m.post({ secret: SECRET, action: 'hashPassword_' }).json.error.code, 'NOT_FOUND');
+});
+
+test('doPost API returns the same public data and accepts submissions with IP rate limits', () => {
+  const env = apiEnv();
+  const viaApi = env.post('public.data', {});
+  assert.equal(viaApi.ok, true);
+  const direct = env.m.run('getPublicData');
+  assert.equal(JSON.stringify(viaApi.data.programmes), JSON.stringify(direct.data.programmes));
+  assert.ok(!/owner@example\.com|v1\$/.test(JSON.stringify(viaApi)));
+  // submissions: per-IP limit is 20/hour even with different browser ids
+  let last;
+  for (let i = 0; i < 21; i++) { last = env.post('public.submit', { form: submission(env) }); if (!last.ok) break; }
+  assert.equal(last.error.code, 'RATE_LIMITED');
+  assert.equal(env.rows('Submissions').length, 20);
+  // another IP is unaffected; google.script.run path is unaffected
+  const other = env.m.post({ secret: SECRET, action: 'public.submit', payload: { form: submission(env) }, client: { ip_hash: 'cd'.repeat(16) } }).json;
+  assert.equal(other.ok, true);
+  assert.equal(submit(env).ok, true);
+  // invalid input is still validated by the same server code
+  assert.equal(env.post('public.submit', { form: submission(env, { resource_url: 'javascript:alert(1)' }) }).error.code, 'INVALID_URL', 'validation runs before rate limits');
+  const fresh2 = env.m.post({ secret: SECRET, action: 'public.submit', payload: { form: submission(env, { resource_url: 'javascript:alert(1)' }) }, client: { ip_hash: 'ef'.repeat(16) } }).json;
+  assert.equal(fresh2.error.code, 'INVALID_URL');
+});
+
+test('doPost API: admin login, admin calls and authorization are identical to google.script.run', () => {
+  const env = apiEnv();
+  const l = env.post('auth.login', { email: 'owner@example.com', password: env.temp });
+  assert.equal(l.ok, true);
+  assert.match(l.data.token, /^[a-f0-9]{64}$/);
+  assert.equal(env.post('admin', { token: l.data.token, action: 'bootstrap' }).error.code, 'PASSWORD_CHANGE_REQUIRED');
+  const c = env.post('admin', { token: l.data.token, action: 'account.changePassword', payload: { current_password: env.temp, new_password: STRONG } });
+  assert.equal(c.ok, true);
+  const tok = c.data.token;
+  const boot = env.post('admin', { token: tok, action: 'bootstrap' });
+  assert.equal(boot.ok, true);
+  assert.ok(!/password_hash|v1\$\d+\$/.test(JSON.stringify(boot)));
+  // token from one path works on the other (shared sessions), and forged tokens fail
+  assert.equal(env.api(tok, 'bootstrap').ok, true);
+  assert.equal(env.post('admin', { token: 'f'.repeat(64), action: 'bootstrap' }).error.code, 'AUTH_REQUIRED');
+  assert.equal(env.post('admin', { action: 'bootstrap' }).error.code, 'AUTH_REQUIRED');
+  // reviewer restrictions still enforced through the API
+  const rev = makeAdmin(env, tok, 'reviewer');
+  assert.equal(env.post('admin', { token: rev.token, action: 'programmes.save', payload: { name: 'Hacked programme' } }).error.code, 'FORBIDDEN');
+  assert.equal(env.post('admin', { token: tok, action: 'no.such.action' }).error.code, 'NOT_FOUND');
+  // logout
+  assert.equal(env.post('auth.logout', { token: tok }).ok, true);
+  assert.equal(env.post('admin', { token: tok, action: 'bootstrap' }).error.code, 'AUTH_REQUIRED');
+});
+
+test('doPost API: per-IP login lockout without affecting other IPs', () => {
+  const env = apiEnv();
+  const attempt = (ip, email) => env.m.post({ secret: SECRET, action: 'auth.login', payload: { email, password: 'wrong-password' }, client: { ip_hash: ip } }).json;
+  const ip = '12'.repeat(16);
+  let r;
+  for (let i = 0; i < 25; i++) r = attempt(ip, 'user' + i + '@example.com');
+  assert.equal(r.error.code, 'LOGIN_LOCKED', 'one IP trying many emails gets locked');
+  const ok = env.m.post({ secret: SECRET, action: 'auth.login', payload: { email: 'owner@example.com', password: env.temp }, client: { ip_hash: '34'.repeat(16) } }).json;
+  assert.equal(ok.ok, true, 'other IPs can still sign in');
+});
+
+test('adding the API does not change the HTML Service website', () => {
+  const env = apiEnv();
+  env.m.newExecution();
+  const html = env.m.context.doGet({ parameter: {} }).getContent();
+  assert.match(html, /PublicApp\.start/);
+  assert.equal(env.m.run('getPublicData').ok, true);
+  assert.throws(() => env.m.run('apiHandle_'), /not found/);
+});
+
+test('generateProxySecret is owner-only, stores a long secret and never logs it', () => {
+  const env = fresh();
+  assert.throws(() => env.m.run('generateProxySecret'), /script owner/);
+  env.m.session.active = 'owner@example.com';
+  env.m.logs.length = 0;
+  env.m.newExecution();
+  env.m.context.generateProxySecret();
+  const secret = env.m.props.PROXY_SHARED_SECRET;
+  assert.match(secret, /^[a-f0-9]{128}$/);
+  assert.ok(!env.m.logs.join('\n').includes(secret), 'secret not written to the log');
+  env.m.session.active = '';
+  assert.equal(env.m.post({ secret, action: 'health' }).json.ok, true);
+});
