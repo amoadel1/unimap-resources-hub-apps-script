@@ -19,7 +19,7 @@ All `.gs` files share one global scope in Apps Script.
 | `Resources.gs` | Resource validation (shared with approval), CRUD, bulk actions |
 | `Submissions.gs` | Public submission (validation, honeypot, rate limit, duplicates), approve, reject, reopen, notes, delete |
 | `Admins.gs` | Admin account management, own profile |
-| `Admin.gs` | **The single authorised dispatcher** (`adminDispatch_`), the action allow-list with minimum roles, bootstrap payload |
+| `AdminServer.gs` | **The single authorised dispatcher** (`adminDispatch_`), the action allow-list with minimum roles, bootstrap payload |
 | `Code.gs` | `doGet`, template include, public bundle, and the browser-callable functions |
 | `Api.gs` | `doPost` JSON API for the Cloudflare Worker (shared secret, allow-listed actions, hashed client IP). See [CLOUDFLARE.md](CLOUDFLARE.md). |
 | `Setup.gs` | `setup`, `validateSetup`, `recoverOwnerAccess`, `clearAppCache`, and the owner guard |

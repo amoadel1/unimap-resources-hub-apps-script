@@ -30,7 +30,7 @@ In the editor's **Files** panel:
 
 1. Delete the default `Code.gs` content. You will replace it.
 2. For every file in `src/`, create a file with **exactly the same name, without the extension**, and paste the full content:
-   - **Script files:** click **+ → Script** and type the name without `.gs`. The files are `Admin`, `Admins`, `Api`, `Auth`, `Categories`, `Code`, `Config`, `Database`, `Migrate`, `Platforms`, `Programmes`, `Resources`, `Seed`, `Settings`, `Setup`, `Submissions`, `Utils`.
+   - **Script files:** click **+ → Script** and type the name without `.gs`. The files are `AdminServer` (it cannot be called `Admin`, because `Admin.html` exists — Apps Script needs unique names), `Admins`, `Api`, `Auth`, `Categories`, `Code`, `Config`, `Database`, `Migrate`, `Platforms`, `Programmes`, `Resources`, `Seed`, `Settings`, `Setup`, `Submissions`, `Utils`.
    - **HTML files:** click **+ → HTML** and type the name without `.html`. The files are `Admin`, `AdminApp`, `AdminForms`, `AdminStyles`, `AdminViews`, `I18n`, `Index`, `PublicApp`, `PublicSubmit`, `Styles`, `Ui`.
    - **`appsscript.json`:** open it and replace its content with `src/appsscript.json`.
 3. Click **Save project** (the disk icon, or Ctrl/Cmd + S).

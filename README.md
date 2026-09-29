@@ -120,7 +120,7 @@ Index.html  ─ doGet() embeds public data  ◀──  Code.gs  (doGet, public A
   PublicSubmit.html                             Categories.gs / Platforms.gs /             Submissions
      │  google.script.run.submitResource ───▶   Resources.gs / Submissions.gs              Categories
 Admin.html  (?p=admin)                          Admins.gs / Auth.gs                        Platforms
-  AdminApp / AdminViews / AdminForms            Admin.gs  (single authorised dispatcher)   Admins
+  AdminApp / AdminViews / AdminForms            AdminServer.gs (single authorised dispatcher)   Admins
      │  google.script.run.adminApi(token,…) ─▶  Database.gs (batched reads/writes, locks)  Settings
                                                 Utils.gs  (validation, URLs, hashing)      ActivityLog
                                                 Setup.gs / Seed.gs / Migrate.gs (owner-only)
