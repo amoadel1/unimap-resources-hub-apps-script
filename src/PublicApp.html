@@ -272,44 +272,134 @@ window.PublicApp = (function () {
 
   function homeSections() {
     var s = D.settings;
-    var progs = state.faculty === 'all' ? D.programmes : D.programmes.filter(function (p) { return p.faculty === state.faculty; });
-    var paras = String(S('welcome') || '').split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var progs = state.faculty === 'all'
+      ? D.programmes
+      : D.programmes.filter(function (p) { return p.faculty === state.faculty; });
+    var paras = String(S('welcome') || '')
+      .split(/\n\s*\n/)
+      .map(function (x) { return x.trim(); })
+      .filter(Boolean);
     var shown = state.welcomeOpen ? paras : paras.slice(0, 2);
     return html`
+      ${s.show_welcome && paras.length ? html`
+        <section class="section container" style="padding-top:24px">
+          <div class="card card-pad" style="max-width:860px">
+            <h2 style="font-size:1.375rem">${t('welcome')}</h2>
+            <div class="prose" style="margin-top:14px" dir="auto">
+              ${shown.map(function (p) {
+                return html`<p>${p}</p>`;
+              })}
+            </div>
+            ${paras.length > 2 ? html`
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                data-action="welcome"
+                style="margin-top:10px;padding-inline:0"
+              >
+                ${state.welcomeOpen ? t('read_less') : t('read_more')}
+              </button>
+            ` : ''}
+            <hr class="divider">
+            <div class="maint">
+              <span class="avatar">${initials(s.maintainer_name)}</span>
+              <div>
+                <p style="font-weight:600" dir="auto">
+                  ${state.lang === 'ar' && s.maintainer_name_ar
+                    ? s.maintainer_name_ar
+                    : s.maintainer_name}
+                </p>
+                <p class="subtle small" dir="auto">
+                  ${S('maintainer_role') || s.maintainer_role}
+                  ${s.contact_email ? html`
+                    · <a href="mailto:${s.contact_email}" class="latin">
+                      ${s.contact_email}
+                    </a>
+                  ` : ''}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      ` : ''}
       <section class="section container" id="programmes" style="padding-top:24px">
         <div class="section-head">
-          <div><span class="eyebrow">${t('programmes')}</span><h2>${t('programmes_title')}</h2><p>${t('programmes_sub')}</p></div>
-          ${navLink({ p: 'submit' }, html`${icon('plus', 'icon-sm')}${t('submit_resource')}`, 'btn btn-secondary btn-sm')}
-        </div>
-        ${IX.faculties.length > 1 ? html`<div class="chips" role="group" aria-label="Faculty" style="margin-bottom:18px">
-          <button type="button" class="chip" data-faculty="all" aria-pressed="${String(state.faculty === 'all')}">${t('all')}</button>
-          ${IX.faculties.map(function (f) { return html`<button type="button" class="chip" data-faculty="${f}" aria-pressed="${String(state.faculty === f)}" dir="auto">${f}</button>`; })}
-        </div>` : ''}
-        <div class="grid grid-3">${progs.map(programmeCard)}</div>
-      </section>
-
-      ${D.categories.length || IX.general.length ? html`<section class="section container" id="official" style="padding-top:8px">
-        <div class="section-head">
-          <div><span class="eyebrow">${t('official_eyebrow')}</span><h2>${t('official_title')}</h2><p dir="auto">${S('official_intro')}</p></div>
-        </div>
-        <div class="grid grid-3">${D.categories.map(collectionCard)}</div>
-        ${IX.general.length ? html`<div class="card list-card" style="margin-top:14px">${IX.general.map(linkRow)}</div>` : ''}
-        <div class="notice" style="margin-top:14px">${icon('shield')}<span>${t('official_note')}</span></div>
-      </section>` : ''}
-
-      ${s.show_welcome && paras.length ? html`<section class="section container" style="padding-top:8px">
-        <div class="card card-pad" style="max-width:860px">
-          <h2 style="font-size:1.375rem">${t('welcome')}</h2>
-          <div class="prose" style="margin-top:14px" dir="auto">${shown.map(function (p) { return html`<p>${p}</p>`; })}</div>
-          ${paras.length > 2 ? html`<button type="button" class="btn btn-ghost btn-sm" data-action="welcome" style="margin-top:10px;padding-inline:0">${state.welcomeOpen ? t('read_less') : t('read_more')}</button>` : ''}
-          <hr class="divider">
-          <div class="maint">
-            <span class="avatar">${initials(s.maintainer_name)}</span>
-            <div><p style="font-weight:600" dir="auto">${state.lang === 'ar' && s.maintainer_name_ar ? s.maintainer_name_ar : s.maintainer_name}</p>
-              <p class="subtle small" dir="auto">${S('maintainer_role') || s.maintainer_role}${s.contact_email ? html` · <a href="mailto:${s.contact_email}" class="latin">${s.contact_email}</a>` : ''}</p></div>
+          <div>
+            <span class="eyebrow">${t('programmes')}</span>
+            <h2>${t('programmes_title')}</h2>
+            <p>${t('programmes_sub')}</p>
           </div>
+          ${navLink(
+            { p: 'submit' },
+            html`${icon('plus', 'icon-sm')}${t('submit_resource')}`,
+            'btn btn-secondary btn-sm'
+          )}
         </div>
-      </section>` : ''}`;
+        ${IX.faculties.length > 1 ? html`
+          <div
+            class="chips"
+            role="group"
+            aria-label="Faculty"
+            style="margin-bottom:18px"
+          >
+            <button
+              type="button"
+              class="chip"
+              data-faculty="all"
+              aria-pressed="${String(state.faculty === 'all')}"
+            >
+              ${t('all')}
+            </button>
+            ${IX.faculties.map(function (f) {
+              return html`
+                <button
+                  type="button"
+                  class="chip"
+                  data-faculty="${f}"
+                  aria-pressed="${String(state.faculty === f)}"
+                  dir="auto"
+                >
+                  ${f}
+                </button>
+              `;
+            })}
+          </div>
+        ` : ''}
+        <div class="grid grid-3">
+          ${progs.map(programmeCard)}
+        </div>
+      </section>
+      ${D.categories.length || IX.general.length ? html`
+        <section
+          class="section container"
+          id="official"
+          style="padding-top:8px"
+        >
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">${t('official_eyebrow')}</span>
+              <h2>${t('official_title')}</h2>
+              <p dir="auto">${S('official_intro')}</p>
+            </div>
+          </div>
+          <div class="grid grid-3">
+            ${D.categories.map(collectionCard)}
+          </div>
+          ${IX.general.length ? html`
+            <div
+              class="card list-card"
+              style="margin-top:14px"
+            >
+              ${IX.general.map(linkRow)}
+            </div>
+          ` : ''}
+          <div class="notice" style="margin-top:14px">
+            ${icon('shield')}
+            <span>${t('official_note')}</span>
+          </div>
+        </section>
+      ` : ''}
+    `;
   }
 
   function initials(name) {
