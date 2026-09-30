@@ -32,7 +32,7 @@ test.before(async () => {
   const cfDir = path.join(__dirname, '..', 'cloudflare');
   wrangler = spawn('npx', ['wrangler', 'dev', '--port', String(CF_PORT), '--ip', '127.0.0.1',
     '--var', `GAS_API_URL:http://localhost:${BACKEND_PORT}/exec`, '--var', `GAS_PROXY_SECRET:${SECRET}`,
-    '--var', 'DEV_BACKEND:1', '--var', 'IP_HASH_SECRET:test-ip-secret'], { cwd: cfDir, detached: true, env: Object.assign({}, process.env, { WRANGLER_SEND_METRICS: 'false' }) });
+    '--var', 'DEV_BACKEND:1', '--var', 'IP_HASH_SECRET:test-ip-secret', '--var', 'TIMEOUT_SCALE:0.1'], { cwd: cfDir, detached: true, env: Object.assign({}, process.env, { WRANGLER_SEND_METRICS: 'false' }) });
   let log = '';
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('wrangler dev did not start:\n' + log)), 60000);
@@ -246,6 +246,32 @@ test('the Worker is not an open proxy and rejects cross-site / malformed request
   assert.equal(unknown.status, 404);
   const proto = await api('POST', '/api/admin/call', { action: '__proto__' });
   assert.equal(proto.status, 404);
+});
+
+test('a stalled Google response is retried for reads/login but never re-sends a write', async () => {
+  const f = backend.faults;
+  // Stall on the POST (the script ran, the answer never came): login is re-sent once.
+  let before = f.posts;
+  f.stallPost = 1;
+  const a = await api('POST', '/api/admin/login', { email: 'nobody@example.com', password: 'wrong-password-123' });
+  assert.equal(a.status, 200);
+  assert.equal(a.json.error.code, 'INVALID_LOGIN', 'the user sees the real answer, not "unavailable"');
+  assert.equal(f.posts - before, 2);
+  // Stall on the GET of the script output: only the GET is repeated, the script runs once.
+  before = f.posts;
+  f.stallEcho = 1;
+  const b = await api('POST', '/api/admin/login', { email: 'nobody@example.com', password: 'wrong-password-123' });
+  assert.equal(b.json.error.code, 'INVALID_LOGIN');
+  assert.equal(f.posts - before, 1);
+  // A write whose POST stalls is NOT re-sent (it may already have been applied).
+  before = f.posts;
+  f.stallPost = 1;
+  const w = await api('POST', '/api/submit', { form: { resource_type: 'student', full_name: 'Stall Test', programme_id: 'x', intake: '2024',
+    platform: 'Box', resource_url: 'https://app.box.com/s/stalltest', client_id: 'abcdefabcdefabcdefab', elapsed_ms: 9000 } });
+  assert.equal(w.status, 502);
+  assert.equal(w.json.error.code, 'BACKEND_UNAVAILABLE');
+  assert.equal(f.posts - before, 1, 'the write was sent exactly once');
+  f.stallPost = 0; f.stallEcho = 0;
 });
 
 // ============================================================================ Admin

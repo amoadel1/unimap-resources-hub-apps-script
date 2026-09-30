@@ -280,6 +280,11 @@ Also:
 - **Login works but every admin action says "Please sign in".** The browser is blocking the cookie. Check that you are on the `https://…workers.dev` URL, not an embedded preview.
 - **`FORBIDDEN – Cross-site request refused`.** The request didn't come from the site itself: a browser extension, a bookmarklet, or a different domain.
 - **Changes take up to a minute to appear publicly.** Other Worker instances refresh every 60 s. This is expected.
+- **Occasional "temporarily unavailable" while Apps Script → Executions shows the call *Completed* in a few seconds.** Google's front end sometimes never delivers the answer (seen on 30 Sep 2026: `TimeoutError` in `wrangler tail`, script finished in about 3 s). Since the Worker update of 30 Sep 2026 the Worker handles this:
+  - Each step has its own timeout: the POST gets 15 s for reads and login, 28 s for writes; fetching the script output gets 10 s.
+  - A stalled output fetch is repeated once.
+  - Read actions and login are re-sent once. Writes are **never** re-sent, because they may already have been applied. If a write shows this error, reload and check before repeating it.
+  - Calls slower than 8 s are logged as `Slow backend call`. Failures are logged as `[action phase ms]`, visible in `wrangler tail`.
 - **Error 1027 / 429.** The daily free Worker quota (100,000 `/api/*` requests) is used up. It resets at 00:00 UTC (08:00 Malaysia time). The static pages still load.
 
 ## Custom domain (later)

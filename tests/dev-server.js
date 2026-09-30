@@ -41,6 +41,9 @@ function createDevApp(opts = {}) {
   </script>`;
 
   const echoes = new Map();
+  // Fault injection for tests: the next N requests of each kind never get an answer
+  // (the script still runs, like the stalls seen on Google's front end).
+  const faults = { stallPost: 0, stallEcho: 0, posts: 0 };
   if (opts.proxySecret) m.props.PROXY_SHARED_SECRET = opts.proxySecret;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -68,6 +71,7 @@ function createDevApp(opts = {}) {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
+        faults.posts++;
         m.newExecution();
         let content;
         try {
@@ -78,6 +82,7 @@ function createDevApp(opts = {}) {
         }
         const key = require('crypto').randomBytes(12).toString('hex');
         echoes.set(key, content);
+        if (faults.stallPost > 0) { faults.stallPost--; return; }
         setTimeout(() => {
           res.writeHead(302, { Location: 'http://localhost:' + (req.socket.localPort) + '/echo?user_content_key=' + key });
           res.end();
@@ -87,6 +92,7 @@ function createDevApp(opts = {}) {
     }
     if (req.method === 'GET' && url.pathname === '/echo') {
       const key = url.searchParams.get('user_content_key');
+      if (faults.stallEcho > 0) { faults.stallEcho--; return; }
       const content = echoes.get(key);
       echoes.delete(key); // one-time URL, like Google's
       if (content === undefined) { res.writeHead(404); res.end('Not found'); return; }
@@ -108,7 +114,7 @@ function createDevApp(opts = {}) {
     }
     res.writeHead(404); res.end('not found');
   });
-  return { m, server, tempPassword };
+  return { m, server, tempPassword, faults };
 }
 
 if (require.main === module) {

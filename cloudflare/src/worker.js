@@ -30,7 +30,12 @@ const COOKIE_SECURE = '__Host-urh_admin';
 const COOKIE_DEV = 'urh_admin_dev';          // used only when DEV_BACKEND=1 on plain http://localhost
 const MAX_BODY = 32 * 1024;                    // request bodies from the browser
 const MAX_BACKEND_BODY = 8 * 1024 * 1024;      // responses from Apps Script
-const BACKEND_TIMEOUT_MS = 28000;
+const BACKEND_TIMEOUT_MS = 28000;             // POST of a write (never retried)
+const SAFE_POST_TIMEOUT_MS = 15000;           // POST of a read / login (retried once)
+const REDIRECT_TIMEOUT_MS = 10000;            // GET of the script output (retried once)
+const SLOW_BACKEND_MS = 8000;                 // log calls slower than this
+const RETRY_SAFE_ACTIONS = new Set(['public.data', 'health', 'auth.login', 'auth.logout']);
+const ADMIN_READ_ACTIONS = new Set(['session.me', 'bootstrap', 'activity.list', 'system.health']);
 const PUBLIC_TTL_MS = 60 * 1000;               // fresh window for the in-memory public cache
 const PUBLIC_STALE_MS = 6 * 60 * 60 * 1000;    // serve last good copy for up to 6 h if Google is down
 const TOKEN_RE = /^[a-f0-9]{64}$/;
@@ -60,7 +65,7 @@ export default {
 /** Secrets pasted into a terminal can pick up stray whitespace/newlines — normalise them once. */
 function cleanEnv(env) {
   const out = Object.create(env);
-  for (const k of ['GAS_API_URL', 'GAS_PROXY_SECRET', 'IP_HASH_SECRET', 'GAS_REDIRECT_HOST', 'DEV_BACKEND']) {
+  for (const k of ['GAS_API_URL', 'GAS_PROXY_SECRET', 'IP_HASH_SECRET', 'GAS_REDIRECT_HOST', 'DEV_BACKEND', 'TIMEOUT_SCALE']) {
     if (typeof env[k] === 'string') Object.defineProperty(out, k, { value: env[k].trim() });
   }
   return out;
@@ -239,21 +244,67 @@ function touchesPublicContent(delta, action) {
  * GET, and only to that host, so the Worker can never be steered to another server.
  */
 async function callBackend(env, action, payload, clientIpHash) {
-  const signal = AbortSignal.timeout(BACKEND_TIMEOUT_MS);
-  const body = JSON.stringify({ secret: env.GAS_PROXY_SECRET, action, payload, client: { ip_hash: clientIpHash || '' } });
-  let res = await fetch(env.GAS_API_URL, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body, redirect: 'manual', signal
-  });
-  for (let hops = 0; res.status >= 300 && res.status < 400; hops++) {
-    if (hops >= 3) throw new Error('Too many redirects from backend');
-    const loc = res.headers.get('Location');
-    if (!loc) throw new Error('Redirect without Location from backend');
-    const next = new URL(loc, env.GAS_API_URL);
-    if (!redirectAllowed(next, env)) throw new Error('Refused redirect to ' + next.hostname);
-    res = await fetch(next.toString(), { method: 'GET', redirect: 'manual', signal });
+  // Read-only calls (and login, whose repeat is harmless) may be retried once if Google's
+  // front end stalls. Writes are never re-sent: the script may already have run them.
+  const retrySafe = RETRY_SAFE_ACTIONS.has(action) || (action === 'admin' && ADMIN_READ_ACTIONS.has(payload && payload.action));
+  const scale = timeoutScale(env);
+  const postTimeout = Math.round((retrySafe ? SAFE_POST_TIMEOUT_MS : BACKEND_TIMEOUT_MS) * scale);
+  try {
+    return await callBackendOnce(env, action, payload, clientIpHash, postTimeout, scale);
+  } catch (err) {
+    if (!retrySafe || !err.transient) throw err;
+    console.warn('Backend retry (' + action + ') after ' + err.phase + ' failure: ' + err.message);
+    return await callBackendOnce(env, action, payload, clientIpHash, postTimeout, scale);
   }
-  if (res.status !== 200) throw new Error('Backend HTTP ' + res.status);
-  const text = await res.text();
+}
+
+/** Local tests only (DEV_BACKEND=1) may shrink the backend timeouts. */
+function timeoutScale(env) {
+  const v = parseFloat(env.TIMEOUT_SCALE);
+  return env.DEV_BACKEND === '1' && v > 0 && v <= 1 ? v : 1;
+}
+
+async function callBackendOnce(env, action, payload, clientIpHash, postTimeout, scale) {
+  const started = Date.now();
+  let phase = 'post';
+  let text;
+  try {
+    const body = JSON.stringify({ secret: env.GAS_PROXY_SECRET, action, payload, client: { ip_hash: clientIpHash || '' } });
+    let res = await fetch(env.GAS_API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body, redirect: 'manual',
+      signal: AbortSignal.timeout(postTimeout)
+    });
+    let hops = 0;
+    while (res.status >= 300 && res.status < 400) {
+      if (++hops > 3) throw new Error('Too many redirects from backend');
+      const loc = res.headers.get('Location');
+      discardBody(res);
+      if (!loc) throw new Error('Redirect without Location from backend');
+      const next = new URL(loc, env.GAS_API_URL);
+      if (!redirectAllowed(next, env)) throw new Error('Refused redirect to ' + next.hostname);
+      phase = 'redirect';
+      // Fetching the script's stored output is read-only, so a stalled GET is retried once.
+      res = await fetchRedirect(next.toString(), Math.round(REDIRECT_TIMEOUT_MS * scale));
+    }
+    phase = 'body';
+    if (res.status !== 200) {
+      discardBody(res);
+      const e = new Error('Backend HTTP ' + res.status);
+      // 5xx, or 404 from the one-time output URL after a retried GET: a read can be re-run.
+      if (res.status >= 500 || (res.status === 404 && hops > 0)) e.transient = true;
+      throw e;
+    }
+    text = res.bodyText !== undefined ? res.bodyText : await res.text();
+  } catch (err) {
+    // Wrap (DOMException.message is read-only) and tag where and after how long it failed.
+    const name = err && err.name ? err.name : 'Error';
+    const e = new Error('[' + action + ' ' + phase + ' ' + (Date.now() - started) + 'ms] ' + name + ': ' + (err && err.message ? err.message : String(err)));
+    e.transient = !!(err && err.transient) || name === 'TimeoutError' || name === 'AbortError' || name === 'TypeError';
+    e.phase = phase;
+    throw e;
+  }
+  const ms = Date.now() - started;
+  if (ms > SLOW_BACKEND_MS) console.log('Slow backend call: ' + action + ' ' + ms + 'ms');
   if (text.length > MAX_BACKEND_BODY) throw new Error('Backend response too large');
   let data;
   try { data = JSON.parse(text); } catch (e) {
@@ -265,6 +316,28 @@ async function callBackend(env, action, payload, clientIpHash) {
     throw new Error('Backend refused the proxy (' + data.error.code + ') — check PROXY_SHARED_SECRET / GAS_PROXY_SECRET');
   }
   return data;
+}
+
+/** GET the script output (headers + body) within one timeout; one retry on a stall/network error. */
+async function fetchRedirect(url, timeoutMs) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const signal = AbortSignal.timeout(timeoutMs);
+      const res = await fetch(url, { method: 'GET', redirect: 'manual', signal });
+      if (res.status !== 200) return res;
+      const bodyText = await res.text();
+      return { status: 200, headers: res.headers, bodyText };
+    } catch (err) {
+      const transient = err && (err.name === 'TimeoutError' || err.name === 'AbortError' || err.name === 'TypeError');
+      if (attempt >= 2 || !transient) throw err;
+      console.warn('Retrying backend output fetch after: ' + (err && err.message));
+    }
+  }
+}
+
+/** Release an unread response body so the connection is not held open. */
+function discardBody(res) {
+  try { if (res && res.body && typeof res.body.cancel === 'function') res.body.cancel().catch(() => {}); } catch (e) { /* ignore */ }
 }
 
 function redirectAllowed(u, env) {
