@@ -185,7 +185,8 @@ async function login(request, env, body) {
   if (typeof body.email !== 'string' || typeof body.password !== 'string' || body.email.length > 200 || body.password.length > 256) {
     return json({ ok: false, error: { code: 'INVALID_LOGIN', message: 'Incorrect email or password.' } }, 200);
   }
-  const data = await callBackend(env, 'auth.login', { email: body.email, password: body.password }, await ipHash(request, env));
+  // bootstrap:true → the dashboard data comes back with the login (one Apps Script call instead of two).
+  const data = await callBackend(env, 'auth.login', { email: body.email, password: body.password, bootstrap: true }, await ipHash(request, env));
   if (data.ok && data.data && TOKEN_RE.test(String(data.data.token || ''))) {
     const token = data.data.token;
     delete data.data.token;

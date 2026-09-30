@@ -834,6 +834,26 @@ test('doPost API: admin login, admin calls and authorization are identical to go
   assert.equal(env.post('admin', { token: tok, action: 'bootstrap' }).error.code, 'AUTH_REQUIRED');
 });
 
+test('doPost API: login with bootstrap returns the dashboard in one execution, with the same checks', () => {
+  const env = apiEnv();
+  // Temporary password: no dashboard data until it is changed.
+  const first = env.post('auth.login', { email: 'owner@example.com', password: env.temp, bootstrap: true });
+  assert.equal(first.ok, true);
+  assert.equal(first.data.bootstrap, undefined);
+  const tok = env.post('admin', { token: first.data.token, action: 'account.changePassword', payload: { current_password: env.temp, new_password: STRONG } }).data.token;
+  env.post('auth.logout', { token: tok });
+  const l = env.post('auth.login', { email: 'owner@example.com', password: STRONG, bootstrap: true });
+  assert.equal(l.ok, true);
+  assert.ok(l.data.bootstrap && Array.isArray(l.data.bootstrap.programmes) && l.data.bootstrap.me.email === 'owner@example.com');
+  assert.ok(!/password_hash|v1\$\d+\$/.test(JSON.stringify(l)), 'no hashes leak');
+  // Wrong password: plain error, nothing else.
+  const bad = env.post('auth.login', { email: 'owner@example.com', password: 'wrong-password-123', bootstrap: true });
+  assert.equal(bad.error.code, 'INVALID_LOGIN');
+  assert.equal(bad.data, undefined);
+  // Without the flag the old response shape is unchanged.
+  assert.equal(env.post('auth.login', { email: 'owner@example.com', password: STRONG }).data.bootstrap, undefined);
+});
+
 test('doPost API: per-IP login lockout without affecting other IPs', () => {
   const env = apiEnv();
   const attempt = (ip, email) => env.m.post({ secret: SECRET, action: 'auth.login', payload: { email, password: 'wrong-password' }, client: { ip_hash: ip } }).json;

@@ -245,7 +245,9 @@ window.AdminApp = (function () {
         }
         S.token = COOKIE_MODE ? 'cookie' : res.data.token; S.me = res.data.admin; S.loginError = '';
         if (!COOKIE_MODE) UI.session.set(TOKEN_KEY, S.token);
-        if (S.me.must_change_password) render(); else bootstrap();
+        if (S.me.must_change_password) render();
+        else if (res.data.bootstrap) { S.data = res.data.bootstrap; S.me = S.data.me; S.loading = false; render(); } // came with the login
+        else bootstrap();
       }).catch(function () { S.loginError = 'Could not reach the server. Check your connection.'; render(); });
     };
   }

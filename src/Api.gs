@@ -74,7 +74,7 @@ function apiHandle_(e) {
     case 'public.submit':
       return submitResource(p.form);
     case 'auth.login':
-      return adminLogin(p.email, p.password);
+      return p.bootstrap === true ? apiLoginWithBootstrap_(p.email, p.password) : adminLogin(p.email, p.password);
     case 'auth.logout':
       return adminLogout(p.token);
     case 'admin':
@@ -84,6 +84,20 @@ function apiHandle_(e) {
     default:
       return { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown action.' } };
   }
+}
+
+/**
+ * Login + dashboard data in ONE execution (saves a whole Apps Script round trip, ~3–5 s).
+ * The bootstrap goes through the normal adminDispatch_ path, so the same session,
+ * role and must-change-password checks apply. If it fails, the login result is still
+ * returned and the browser simply loads the dashboard with a second call as before.
+ */
+function apiLoginWithBootstrap_(email, password) {
+  var res = adminLogin(email, password);
+  if (!res.ok || !res.data || !res.data.token || !res.data.admin || res.data.admin.must_change_password) return res;
+  var boot = adminDispatch_(res.data.token, 'bootstrap', {});
+  if (boot && boot.ok) res.data.bootstrap = boot.data;
+  return res;
 }
 
 /** Hashed client IP of the current API request, or '' (HTML Service requests have none). */
