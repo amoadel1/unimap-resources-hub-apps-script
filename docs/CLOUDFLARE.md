@@ -206,7 +206,7 @@ The local backend runs the real `src/*.gs` code, including `doPost`, and imitate
 
 ## Testing
 
-`npm test` runs everything: 46 backend + 13 Apps Script UI + 14 Cloudflare end-to-end tests (73). See [TESTING.md](TESTING.md).
+`npm test` runs everything: 49 backend + 13 Apps Script UI + 15 Cloudflare end-to-end tests (77). See [TESTING.md](TESTING.md).
 
 The Cloudflare end-to-end tests run the **real Worker in `wrangler dev` (workerd)** against the **real Apps Script code**, in Chromium. They cover:
 

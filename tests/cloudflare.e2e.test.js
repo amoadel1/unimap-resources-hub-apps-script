@@ -449,6 +449,75 @@ test('admin management, password change, logout, expired and unauthorised sessio
   await ctx.close();
 });
 
+test('anonymous analytics: visits, programme views, link opens and searches are counted; admins can see them', async () => {
+  const summary = () => { backend.m.newExecution(); return backend.m.context.analyticsSummary_({}, {}); };
+  const before = summary();
+  const mech = backend.m.context.db_rows_('Programmes').find((p) => p.slug === 'bachelor-mechatronic-engineering-with-honours');
+  const progBefore = (before.top.programmes.find((x) => x.key === mech.id) || { count: 0 }).count;
+
+  const errors = [];
+  // Headless browsers are (correctly) treated as bots, so use an ordinary desktop Chrome UA here.
+  const REAL = Object.assign({}, DESKTOP, { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36' });
+  const { ctx, page } = await open(REAL, '/', errors);
+  await ctx.route(/drive\.google\.com|onedrive|box\.com|t\.me/, (r) => r.abort());
+  const t0 = Date.now();
+  await page.waitForSelector('.prog-card');
+  assert.ok(Date.now() - t0 < 5000, 'page renders without waiting for analytics');
+  await page.goto(BASE + '/?p=programme&s=bachelor-mechatronic-engineering-with-honours');
+  await page.waitForSelector('#prog-list a[data-rid]');
+  const rid = await page.getAttribute('#prog-list a[data-rid]', 'data-rid');
+  const [popup] = await Promise.all([ctx.waitForEvent('page'), page.click('#prog-list a[data-rid]')]);
+  await popup.close();
+  await page.goto(BASE + '/');
+  await page.waitForSelector('#home-search');
+  await page.fill('#home-search', 'zzqqnomatch');
+  await page.waitForTimeout(1800);
+  await page.evaluate(() => window.URHAnalytics.flush());
+  await page.waitForTimeout(300);
+  await ctx.close();
+
+  // The Worker sends its batch in the background once it is due (every 6 s in tests).
+  let after = summary();
+  for (let i = 0; i < 30 && after.periods.total.visits === before.periods.total.visits; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    await api('GET', '/api/health');
+    await new Promise((r) => setTimeout(r, 300));
+    after = summary();
+  }
+  assert.ok(after.periods.total.visits >= before.periods.total.visits + 1, 'visit counted');
+  assert.ok(after.periods.total.pageviews >= before.periods.total.pageviews + 3, 'page views counted');
+  assert.ok(after.periods.total.uniques >= 1, 'unique visitors counted');
+  assert.ok(((after.top.programmes.find((x) => x.key === mech.id) || {}).count || 0) >= progBefore + 1, 'programme view counted');
+  assert.ok((after.top.clicks.find((x) => x.key === rid) || {}).count >= 1, 'resource link open counted');
+  assert.ok(after.searches_no_results_30d >= 1, 'search counted (without its text)');
+  assert.ok(after.top.devices.some((x) => x.key === 'desktop'));
+  assert.deepEqual(errors, []);
+
+  // Nothing identifying is stored.
+  backend.m.newExecution();
+  const sh = backend.m.context.analyticsSheet_(false);
+  const all = JSON.stringify(sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues());
+  assert.ok(!/127\.0\.0\.1|Mozilla|HeadlessChrome|zzqqnomatch|owner@example\.com/.test(all), 'no IP, user agent, search text or email in the sheet');
+  assert.equal(sh.getLastColumn(), 4);
+
+  // The collection endpoint only accepts same-site JSON; there is no public read endpoint.
+  assert.equal((await api('POST', '/api/collect', { events: [{ t: 'visit' }] }, { Origin: 'https://evil.example' })).status, 403);
+  assert.equal((await api('POST', '/api/collect', { events: [{ t: 'visit' }] }, { 'User-Agent': 'Googlebot/2.1' })).status, 204);
+  assert.equal((await api('GET', '/api/analytics')).status, 404);
+  assert.equal((await api('POST', '/api/admin/call', { action: 'analytics.summary' })).json.error.code, 'AUTH_REQUIRED');
+
+  // The admin dashboard shows the Analytics page.
+  const adm = await open(DESKTOP, '/admin', errors);
+  await adminLogin(adm.page);
+  await adm.page.click('.admin-shell a[data-view="analytics"]');
+  await adm.page.waitForSelector('.an-stats');
+  assert.match(await adm.page.textContent('#page'), /Most viewed programmes/);
+  assert.match(await adm.page.textContent('#page'), /Mechatronic/);
+  assert.equal(await adm.page.locator('.an-stats .stat').count(), 4);
+  assert.deepEqual(errors, []);
+  await adm.ctx.close();
+});
+
 test('admin dashboard works on a phone through Cloudflare', async () => {
   const errors = [];
   const { ctx, page } = await open(MOBILE, '/admin', errors);

@@ -518,6 +518,106 @@
     }
   };
 
+  // ======================================================================= Analytics
+  // Anonymous, aggregated counts only (see src/Analytics.gs). Loaded on demand.
+  V.analytics = {
+    data: null, error: '', loading: false,
+    label: {
+      page: function (k) {
+        var m = /^official:(.+)$/.exec(k);
+        var names = { home: 'Home', search: 'Search results', programme: 'Programme pages', official: 'Official links', submit: 'Submit page', about: 'About', notfound: 'Page not found', other: 'Other' };
+        if (m) {
+          var cat = (V.analytics.cats || []).filter(function (c) { return c.slug === m[1]; })[0];
+          return 'Official links › ' + (cat ? cat.name : m[1].replace(/-/g, ' '));
+        }
+        return names[k] || k;
+      },
+      device: function (k) { return { mobile: 'Mobile', tablet: 'Tablet', desktop: 'Desktop' }[k] || k; },
+      browser: function (k) { return { chrome: 'Chrome', safari: 'Safari', firefox: 'Firefox', edge: 'Edge', samsung: 'Samsung Internet', opera: 'Opera', other: 'Other' }[k] || k; },
+      referrer: function (k) { return k === 'direct' ? 'Direct / apps (WhatsApp, Telegram…)' : k; }
+    },
+    bars: function (title, rows, fmt, note) {
+      var max = rows.reduce(function (m, r) { return Math.max(m, r.count); }, 0) || 1;
+      var total = rows.reduce(function (m, r) { return m + r.count; }, 0);
+      return html`<section class="card">
+        <div class="panel-head"><h3>${title}</h3>${note ? html`<span class="small muted">${note}</span>` : ''}</div>
+        ${rows.length ? html`<div class="an-bars">${rows.map(function (r) {
+          var pct = Math.round(r.count / max * 100);
+          return html`<div class="an-row"><div class="an-label" dir="auto" title="${fmt(r.key)}">${fmt(r.key)}</div>
+            <div class="an-track"><span style="width:${pct}%"></span></div>
+            <div class="an-num">${r.count}${total ? html` <span class="subtle">${Math.round(r.count / total * 100)}%</span>` : ''}</div></div>`;
+        })}</div>` : empty('No data yet')}
+      </section>`;
+    },
+    render: function (ctx) {
+      var self = this, a = this.data;
+      this.cats = ctx.S.data.categories;
+      var head = pageTitle('Analytics', 'Anonymous visitor statistics for the public website. No personal data is collected.',
+        html`<button class="btn btn-secondary btn-sm" data-a="reload">${icon('refresh', 'icon-sm')}Refresh</button>`);
+      if (!a) {
+        return html`${head}${this.error ? html`<div class="card card-pad"><div class="notice notice-warn">${icon('alert')}<span>${this.error}</span></div></div>`
+          : html`<div class="card card-pad" style="text-align:center"><span class="spinner"></span><p class="muted small" style="margin-top:10px">Loading statistics…</p></div>`}`;
+      }
+      var P = a.periods;
+      var card = function (label, p) {
+        return html`<div class="stat"><div class="l" style="margin:0 0 6px">${label}</div><div class="v">${p.visits}</div>
+          <div class="l">visits · ${p.pageviews} page views</div>
+          <div class="l" style="margin-top:2px">${p.uniques} unique visitors* · ${p.clicks} link opens</div></div>`;
+      };
+      var maxDay = a.daily.reduce(function (m, d) { return Math.max(m, d.visits); }, 0) || 1;
+      var progName = function (id) { var p = ctx.byId(ctx.S.data.programmes, id); return p ? p.name : 'Deleted programme'; };
+      var resName = function (id) { var r = ctx.byId(ctx.S.data.resources, id); return r ? r.title : 'Deleted resource'; };
+      return html`${head}
+        <div class="stats an-stats">${card('Today', P.today)}${card('This week', P.week)}${card('This month', P.month)}${card(a.since ? 'Total since ' + a.since : 'Total', P.total)}</div>
+        <section class="card" style="margin-top:16px">
+          <div class="panel-head"><h3>Visits — last 30 days</h3><span class="small muted">${P.total.searches} searches in total</span></div>
+          <div class="an-chart" role="img" aria-label="Daily visits for the last 30 days">${a.daily.map(function (d) {
+            var h = Math.round(d.visits / maxDay * 100);
+            return html`<div class="an-col" title="${d.date}: ${d.visits} visits, ${d.pageviews} page views, ${d.uniques} unique"><span style="height:${Math.max(h, d.visits ? 3 : 0)}%"></span></div>`;
+          })}</div>
+          <div class="an-axis"><span>${a.daily[0].date}</span><span>${a.today}</span></div>
+        </section>
+        <p class="result-count" style="margin:22px 0 10px">Last 30 days</p>
+        <div class="two-col" style="margin-top:0">
+          ${this.bars('Most visited pages', a.top.pages, this.label.page)}
+          ${this.bars('Most viewed programmes', a.top.programmes, progName)}
+        </div>
+        <div class="two-col">
+          ${this.bars('Resource link opens', a.top.clicks, resName)}
+          ${this.bars('Traffic sources', a.top.referrers, this.label.referrer)}
+        </div>
+        <div class="two-col">
+          ${this.bars('Devices', a.top.devices, this.label.device)}
+          ${this.bars('Browsers', a.top.browsers, this.label.browser)}
+        </div>
+        <div class="two-col">
+          ${this.bars('Top countries', a.top.countries, function (k) { return k; })}
+          <section class="card card-pad"><h3 style="font-size:1rem">Searches</h3>
+            <dl class="kv" style="margin-top:12px"><dt>Searches (30 days)</dt><dd>${a.searches_30d}</dd><dt>With no results</dt><dd>${a.searches_no_results_30d}</dd></dl>
+            <p class="hint" style="margin-top:12px">Only the number of searches is counted. What people type is never recorded.</p></section>
+        </div>
+        <div class="notice" style="margin-top:16px">${icon('shield')}<span>
+          *Unique visitors are counted per day with an anonymous code that changes every day, so the same person on two days counts twice.
+          Visitors with Do Not Track or Global Privacy Control are not counted, and figures are estimates.
+          No IP addresses, names, emails or search text are stored. Daily totals are kept for ${a.retention_days} days. Times: ${a.timezone}.</span></div>`;
+    },
+    load: function (ctx) {
+      var self = this;
+      if (this.loading) return;
+      this.loading = true; this.error = '';
+      ctx.call('analytics.summary', {}).then(function (d) { self.data = d; self.loading = false; if (ctx.S.view === 'analytics') ctx.renderPage(); })
+        .catch(function (err) { self.loading = false; self.error = err.message || 'Could not load analytics.'; if (ctx.S.view === 'analytics') ctx.renderPage(); });
+    },
+    mount: function (ctx) {
+      var self = this;
+      if (!this.data && !this.error) this.load(ctx);
+      $('#page').onclick = function (e) {
+        var b = e.target.closest('[data-a="reload"]'); if (!b) return;
+        self.data = null; self.error = ''; ctx.renderPage(); self.load(ctx);
+      };
+    }
+  };
+
   // ======================================================================= Activity
   V.activity = {
     list: function (ctx) {

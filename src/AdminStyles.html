@@ -150,4 +150,19 @@ html[dir="rtl"] .switch input:checked + .track::after { transform: translateX(-1
 .check-list .ok { color: var(--ok-text); }
 .check-list .bad { color: var(--danger); }
 .order-btns { display: inline-flex; gap: 2px; }
+
+/* Analytics */
+.an-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 1000px) { .an-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.an-bars { display: grid; gap: 10px; padding: 14px 18px 16px; }
+.an-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto; gap: 12px; align-items: center; font-size: .875rem; }
+.an-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.an-track { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.an-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.an-num { font-variant-numeric: tabular-nums; color: var(--text); text-align: end; min-width: 64px; }
+.an-chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; padding: 16px 18px 6px; }
+.an-col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.an-col span { display: block; width: 100%; border-radius: 3px 3px 0 0; background: var(--accent); opacity: .85; }
+.an-col:hover span { opacity: 1; }
+.an-axis { display: flex; justify-content: space-between; padding: 0 18px 14px; font-size: .75rem; color: var(--text-3); font-variant-numeric: tabular-nums; }
 </style>

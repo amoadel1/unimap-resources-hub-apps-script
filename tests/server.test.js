@@ -922,3 +922,74 @@ test('generateProxySecret is owner-only, stores a long secret and never logs it'
   env.m.session.active = '';
   assert.equal(env.m.post({ secret, action: 'health' }).json.ok, true);
 });
+
+// ============================================================================ Anonymous analytics
+test('analytics: ingest aggregates per day, counts unique visitors once, validates input', () => {
+  const env = apiEnv();
+  const pid = progId(env);
+  const rid = env.rows('Resources')[0].id;
+  const batch = {
+    counts: [['visit', '', 3], ['pageview', '', 5], ['page', 'home', 3], ['page', 'programme', 2], ['programme', pid, 2],
+      ['click', rid, 1], ['device', 'mobile', 2], ['device', 'desktop', 1], ['browser', 'chrome', 3], ['country', 'MY', 3],
+      ['referrer', 'direct', 2], ['referrer', 'google', 1], ['search', '', 2], ['search_empty', '', 1],
+      // invalid rows are ignored
+      ['ip', '1.2.3.4', 1], ['page', '=HYPERLINK("x")', 1], ['click', 'javascript:alert(1)', 1], ['visit', '', -5], ['uniques', '', 99], 'junk'],
+    visitors: ['a1b2c3d4e5f60718', 'a1b2c3d4e5f60718', '0011223344556677', 'not-a-hash']
+  };
+  assert.equal(env.post('analytics.ingest', batch).ok, true);
+  // second batch the same day: same visitor again + one new one; counters add up in the same rows
+  assert.equal(env.post('analytics.ingest', { counts: [['visit', '', 1], ['page', 'home', 1]], visitors: ['a1b2c3d4e5f60718', '8899aabbccddeeff'] }).ok, true);
+  const rows = env.ctx((c) => c.analyticsSheet_(false).getRange(1, 1, c.analyticsSheet_(false).getLastRow(), 4).getValues());
+  assert.deepEqual(JSON.parse(JSON.stringify(rows[0])), ['date', 'metric', 'key', 'count']);
+  const find = (m, k) => rows.find((r) => r[1] === m && r[2] === k);
+  assert.equal(find('visit', '')[3], 4);
+  assert.equal(find('page', 'home')[3], 4);
+  assert.equal(find('uniques', '')[3], 3, 'each daily visitor code counted once');
+  assert.equal(rows.filter((r) => r[1] === 'page' && r[2] === 'home').length, 1, 'one row per day per counter');
+  const text = JSON.stringify(rows);
+  assert.ok(!/1\.2\.3\.4|HYPERLINK|javascript|a1b2c3d4e5f60718|8899aabbccddeeff/.test(text), 'no IPs, injected values or visitor codes stored');
+  assert.equal(rows[0].length, 4);
+});
+
+test('analytics: summary is admin-only, computes periods and top lists; ingest needs the proxy secret', () => {
+  const env = apiEnv();
+  const t = ownerToken(env);
+  const pid = progId(env);
+  const day = 86400000;
+  const now = Date.now();
+  // yesterday and today, written through the real ingest code with fixed clocks
+  env.ctx((c) => c.analyticsIngest_({ counts: [['visit', '', 2], ['pageview', '', 4], ['programme', pid, 3]], visitors: ['1111111111111111'] }, now - day));
+  env.ctx((c) => c.analyticsIngest_({ counts: [['visit', '', 5], ['pageview', '', 9], ['programme', pid, 1], ['device', 'mobile', 5]], visitors: ['1111111111111111', '2222222222222222'] }, now));
+  const s = env.api(t, 'analytics.summary', {});
+  assert.equal(s.ok, true, JSON.stringify(s));
+  assert.equal(s.data.periods.today.visits, 5);
+  assert.equal(s.data.periods.total.visits, 7);
+  assert.equal(s.data.periods.total.uniques, 3, 'visitor codes are per day: same person yesterday and today counts twice');
+  assert.equal(s.data.top.programmes[0].key, pid);
+  assert.equal(s.data.top.programmes[0].count, 4);
+  assert.equal(s.data.daily.length, 30);
+  assert.equal(s.data.daily[29].visits, 5);
+  // role checks
+  const rev = makeAdmin(env, t, 'reviewer');
+  assert.equal(env.api(rev.token, 'analytics.summary', {}).error.code, 'FORBIDDEN', 'reviewers cannot see analytics');
+  const adm = makeAdmin(env, t, 'admin');
+  assert.equal(env.api(adm.token, 'analytics.summary', {}).ok, true);
+  assert.equal(env.api('f'.repeat(64), 'analytics.summary', {}).error.code, 'AUTH_REQUIRED');
+  // not callable from the browser, and doPost needs the secret
+  assert.throws(() => env.m.run('analyticsIngest_', { counts: [['visit', '', 1]] }));
+  assert.equal(env.m.post({ secret: 'wrong-secret-'.repeat(4), action: 'analytics.ingest', payload: { counts: [['visit', '', 1000]] } }).json.error.code, 'FORBIDDEN');
+});
+
+test('analytics: rows older than the retention window are pruned', () => {
+  const env = apiEnv();
+  const day = 86400000;
+  const now = Date.now();
+  env.ctx((c) => {
+    const sh = c.analyticsSheet_(true);
+    const d = (n) => c.analyticsDate_(now - n * day);
+    sh.getRange(2, 1, 3, 4).setValues([[d(500), 'visit', '', 9], [d(401), 'visit', '', 8], [d(10), 'visit', '', 7]]);
+  });
+  env.ctx((c) => c.analyticsIngest_({ counts: [['visit', '', 1]] }, now));
+  const rows = env.ctx((c) => c.analyticsSheet_(false).getRange(2, 1, c.analyticsSheet_(false).getLastRow() - 1, 4).getValues());
+  assert.deepEqual(rows.map((r) => r[3]), [7, 1], 'rows older than 400 days removed, recent ones kept');
+});

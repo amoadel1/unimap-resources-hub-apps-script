@@ -101,6 +101,7 @@ Available at `/admin` on the production site.
   - **Reviewer:** reviews submissions.
 - **Settings** for every public text (both languages), contact details and submission rules.
 - **Activity log** of every administrative action.
+- **Analytics** (owners and admins): anonymous visits, page views, daily unique visitors, most viewed pages and programmes, resource link opens, devices, browsers, countries and traffic sources. No personal data, IP addresses or search text are stored. Details: [docs/ANALYTICS.md](docs/ANALYTICS.md).
 
 ### Common tasks
 
@@ -159,6 +160,7 @@ The setup function creates all of these tabs, headers, formats and dropdowns. Yo
 | **Admins** | Dashboard accounts | `id, name, email, role, is_active, password_hash, must_change_password, password_changed_at, created_at, updated_at, last_login, created_by` |
 | **Settings** | Site texts and options | `key, value, description, updated_at, updated_by` |
 | **ActivityLog** | Audit trail (append-only) | `id, timestamp, admin_email, action, entity_type, entity_id, details` |
+| **Analytics** | Anonymous daily counters, created automatically; kept 400 days | `date, metric, key, count` |
 
 - **IDs:** every row has a random, stable ID (e.g. `res_4f1c2a9be0d34c51a7b2`). Row numbers are never used as IDs.
 - **Columns:** they are matched by header name, so reordering columns or adding your own notes columns will not break anything.
@@ -252,13 +254,14 @@ unimap-resources-hub-apps-script/
 ```
 
 - **Run locally:** `npm install && npm run dev`, then open `http://localhost:8787` (and `/?p=admin`). The temporary owner password is printed in the terminal.
-- **Run the tests:** `npm test` runs 46 backend tests, 13 Apps Script UI tests and 14 Cloudflare end-to-end tests (73 in total).
+- **Run the tests:** `npm test` runs 49 backend tests, 13 Apps Script UI tests and 15 Cloudflare end-to-end tests (77 in total).
 - **Run the Cloudflare version locally:** `npm run dev:cf`, then open `http://localhost:8787`.
 - **Sync with Apps Script (optional):** use `clasp`. See [docs/SETUP_AND_DEPLOYMENT.md#option-b--clasp-recommended-for-github](docs/SETUP_AND_DEPLOYMENT.md#option-b--clasp-recommended-for-github).
 - **Branch workflow:** make changes on a branch, run `npm test`, then `clasp push`. Test with **Deploy → Test deployments**, then update the production deployment with a **new version**.
 
 ## Documentation index
 
+- [docs/ANALYTICS.md](docs/ANALYTICS.md): anonymous analytics, including what is and is not collected, retention and quotas.
 - [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md): Cloudflare frontend, including architecture, deployment, secrets, the free-plan and inactivity analysis, testing, recovery and troubleshooting.
 - [docs/SETUP_AND_DEPLOYMENT.md](docs/SETUP_AND_DEPLOYMENT.md): create the project, run setup, authorize, deploy and update.
 - [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md): day-to-day administration.

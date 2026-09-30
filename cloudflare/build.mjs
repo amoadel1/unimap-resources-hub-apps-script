@@ -52,6 +52,7 @@ const themeJs = hashed(join(DIST, 'assets'), 'theme', 'js', read(join(WEB, 'them
 const publicJs = hashed(join(DIST, 'assets'), 'public', 'js', banner + [
   configPublic,
   read(join(WEB, 'platform.js')),
+  read(join(WEB, 'analytics.js')),
   extract('Ui', 'script'),
   extract('I18n', 'script'),
   extract('PublicApp', 'script'),

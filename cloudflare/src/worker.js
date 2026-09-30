@@ -23,7 +23,7 @@ const ADMIN_ACTIONS = new Set([
   'resources.save', 'resources.setActive', 'resources.delete', 'resources.bulk',
   'submissions.approve', 'submissions.reject', 'submissions.saveNotes', 'submissions.reopen', 'submissions.delete',
   'admins.save', 'admins.resetPassword', 'admins.delete',
-  'settings.save', 'activity.list', 'system.health', 'system.clearCache'
+  'settings.save', 'activity.list', 'analytics.summary', 'system.health', 'system.clearCache'
 ]);
 
 const COOKIE_SECURE = '__Host-urh_admin';
@@ -35,7 +35,7 @@ const SAFE_POST_TIMEOUT_MS = 15000;           // POST of a read / login (retried
 const REDIRECT_TIMEOUT_MS = 10000;            // GET of the script output (retried once)
 const SLOW_BACKEND_MS = 8000;                 // log calls slower than this
 const RETRY_SAFE_ACTIONS = new Set(['public.data', 'health', 'auth.login', 'auth.logout']);
-const ADMIN_READ_ACTIONS = new Set(['session.me', 'bootstrap', 'activity.list', 'system.health']);
+const ADMIN_READ_ACTIONS = new Set(['session.me', 'bootstrap', 'activity.list', 'analytics.summary', 'system.health']);
 const PUBLIC_TTL_MS = 60 * 1000;               // fresh window for the in-memory public cache
 const PUBLIC_STALE_MS = 6 * 60 * 60 * 1000;    // serve last good copy for up to 6 h if Google is down
 const TOKEN_RE = /^[a-f0-9]{64}$/;
@@ -53,6 +53,7 @@ export default {
     }
     let response;
     try {
+      maybeFlushAnalytics(env, ctx, false);
       response = await route(request, env, ctx, url);
     } catch (err) {
       console.error('API error:', err && err.stack ? err.stack : String(err));
@@ -87,8 +88,9 @@ async function route(request, env, ctx, url) {
     case 'POST /api/admin/login': return guarded(request, env, login);
     case 'POST /api/admin/logout': return guarded(request, env, logout);
     case 'POST /api/admin/call': return guarded(request, env, adminCall);
+    case 'POST /api/collect': return guarded(request, env, (req, e, body) => collect(req, e, body, ctx));
     default: {
-      const known = ['/api/public', '/api/health', '/api/submit', '/api/admin/login', '/api/admin/logout', '/api/admin/call'];
+      const known = ['/api/public', '/api/health', '/api/submit', '/api/admin/login', '/api/admin/logout', '/api/admin/call', '/api/collect'];
       if (known.includes(url.pathname)) return json({ ok: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed.' } }, 405);
       return json({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found.' } }, 404);
     }
@@ -235,6 +237,146 @@ function touchesPublicContent(delta, action) {
   if (!delta || typeof delta !== 'object') return false;
   const names = Object.keys(delta.upsert || {}).concat(Object.keys(delta.remove || {}));
   return names.some((n) => CONTENT_TABLES.includes(n));
+}
+
+// ---------------------------------------------------------------------------- Anonymous analytics
+//
+// The browser posts tiny anonymous events to /api/collect. Nothing identifying is kept:
+//   - bots are dropped; the user agent is reduced to device type + browser family;
+//   - the country is Cloudflare's 2-letter code; the referrer is a host name only;
+//   - unique visitors use a keyed hash of (day, IP, user agent) that changes every day and
+//     is only used by Apps Script to avoid double counting (never stored in the sheet).
+// Events are added up in memory and sent to Apps Script as ONE aggregated batch about once a
+// minute (or every 200 events), in the background (ctx.waitUntil), so pages never wait.
+// A batch still in memory when Cloudflare recycles the instance is lost: counts are estimates.
+
+const ANALYTICS_FLUSH_MS = 60 * 1000;
+const ANALYTICS_FLUSH_EVENTS = 200;
+const ANALYTICS_MAX_KEYS = 500;
+const ANALYTICS_MAX_EVENTS_PER_REQUEST = 30;
+const ANALYTICS_IP_LIMIT = 300;                 // events per hashed IP per 10 minutes (per instance)
+const BOT_RE = /bot|crawl|spider|slurp|preview|fetch|monitor|headless|lighthouse|pingdom|curl|wget|python|java\/|go-http|axios|node-fetch|facebookexternalhit|whatsapp|telegram|discord|embedly/i;
+const PAGE_RE = /^(home|search|programme|official|submit|about|notfound)(:[a-z0-9-]{1,80})?$/;
+const PROG_RE = /^prg_[a-z0-9]{6,40}$/;
+const RES_RE = /^res_[a-z0-9]{6,40}$/;
+const HOST_RE = /^[a-z0-9.-]{1,80}$/;
+
+let analyticsBuf = newAnalyticsBuffer();
+const analyticsIpCount = new Map();
+
+function newAnalyticsBuffer() { return { counts: new Map(), visitors: new Set(), events: 0, since: 0 }; }
+
+function addCount(metric, key, n) {
+  const k = metric + '\u0001' + key;
+  if (!analyticsBuf.counts.has(k) && analyticsBuf.counts.size >= ANALYTICS_MAX_KEYS) return;
+  analyticsBuf.counts.set(k, (analyticsBuf.counts.get(k) || 0) + (n || 1));
+}
+
+function deviceType(ua) {
+  if (/iPad|Tablet|PlayBook|Silk|Kindle/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua))) return 'tablet';
+  if (/Mobi|iPhone|iPod|Android|IEMobile|Opera Mini/i.test(ua)) return 'mobile';
+  return 'desktop';
+}
+function browserFamily(ua) {
+  if (/Edg(e|A|iOS)?\//.test(ua)) return 'edge';
+  if (/OPR\/|Opera/.test(ua)) return 'opera';
+  if (/SamsungBrowser\//.test(ua)) return 'samsung';
+  if (/Firefox\/|FxiOS\//.test(ua)) return 'firefox';
+  if (/Chrome\/|CriOS\/|Chromium\//.test(ua)) return 'chrome';
+  if (/Safari\//.test(ua) && /Version\//.test(ua)) return 'safari';
+  return 'other';
+}
+function referrerKey(host, ownHost) {
+  host = String(host || '').toLowerCase().replace(/^www\./, '').slice(0, 80);
+  if (!host || !HOST_RE.test(host) || host === ownHost.replace(/^www\./, '')) return 'direct';
+  if (/(^|\.)google\./.test(host)) return 'google';
+  if (/(^|\.)bing\.com$/.test(host)) return 'bing';
+  if (/(^|\.)(facebook\.com|fb\.com)$/.test(host)) return 'facebook';
+  if (/(^|\.)(instagram\.com)$/.test(host)) return 'instagram';
+  if (/(^|\.)(t\.co|twitter\.com|x\.com)$/.test(host)) return 'x.com';
+  if (/(^|\.)(linkedin\.com|lnkd\.in)$/.test(host)) return 'linkedin';
+  return host;
+}
+function malaysiaDate(ms) { return new Date(ms + 8 * 3600000).toISOString().slice(0, 10); }
+
+async function dailyVisitorHash(request, env) {
+  const ip = request.headers.get('CF-Connecting-IP') || '';
+  if (!ip) return '';
+  const ua = (request.headers.get('User-Agent') || '').slice(0, 300);
+  const secret = String(env.IP_HASH_SECRET || env.GAS_PROXY_SECRET);
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('uv|' + malaysiaDate(Date.now()) + '|' + ip + '|' + ua));
+  return Array.from(new Uint8Array(sig)).slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function collect(request, env, body, ctx) {
+  const done = () => new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
+  const ua = request.headers.get('User-Agent') || '';
+  const events = Array.isArray(body.events) ? body.events.slice(0, ANALYTICS_MAX_EVENTS_PER_REQUEST) : [];
+  if (!ua || BOT_RE.test(ua) || !events.length) return done();
+
+  // Per-instance flood guard (keyed by the same hashed IP used for other rate limits).
+  const ipKey = await ipHash(request, env);
+  const now = Date.now();
+  if (ipKey) {
+    const slot = analyticsIpCount.get(ipKey);
+    if (!slot || now - slot.at > 10 * 60 * 1000) analyticsIpCount.set(ipKey, { at: now, n: events.length });
+    else { slot.n += events.length; if (slot.n > ANALYTICS_IP_LIMIT) return done(); }
+    if (analyticsIpCount.size > 5000) analyticsIpCount.clear();
+  }
+
+  const ownHost = new URL(request.url).hostname.toLowerCase();
+  let accepted = 0;
+  for (const ev of events) {
+    if (!ev || typeof ev !== 'object') continue;
+    switch (ev.t) {
+      case 'visit': {
+        addCount('visit', '');
+        addCount('device', deviceType(ua));
+        addCount('browser', browserFamily(ua));
+        const country = String((request.cf && request.cf.country) || '').toUpperCase();
+        if (/^[A-Z]{2}$/.test(country) && country !== 'XX' && country !== 'T1') addCount('country', country);
+        addCount('referrer', referrerKey(typeof ev.ref === 'string' ? ev.ref : '', ownHost));
+        const h = await dailyVisitorHash(request, env);
+        if (h && analyticsBuf.visitors.size < 2000) analyticsBuf.visitors.add(h);
+        accepted++;
+        break;
+      }
+      case 'pv':
+        if (typeof ev.p === 'string' && PAGE_RE.test(ev.p)) { addCount('pageview', ''); addCount('page', ev.p); accepted++; }
+        if (typeof ev.id === 'string' && PROG_RE.test(ev.id)) addCount('programme', ev.id);
+        break;
+      case 'click':
+        if (typeof ev.id === 'string' && RES_RE.test(ev.id)) { addCount('click', ev.id); accepted++; }
+        break;
+      case 'search':
+        addCount('search', ''); if (ev.empty === true) addCount('search_empty', ''); accepted++;
+        break;
+      default: break;
+    }
+  }
+  if (accepted) {
+    if (!analyticsBuf.events) analyticsBuf.since = now;
+    analyticsBuf.events += accepted;
+  }
+  maybeFlushAnalytics(env, ctx, false);
+  return done();
+}
+
+/** Sends the in-memory counters to Apps Script in the background when they are due. */
+function maybeFlushAnalytics(env, ctx, force) {
+  const b = analyticsBuf;
+  if (!b.events) return false;
+  if (!force && b.events < ANALYTICS_FLUSH_EVENTS && Date.now() - b.since < ANALYTICS_FLUSH_MS * timeoutScale(env)) return false;
+  analyticsBuf = newAnalyticsBuffer();
+  const counts = [];
+  for (const [k, n] of b.counts) { const i = k.indexOf('\u0001'); counts.push([k.slice(0, i), k.slice(i + 1), n]); }
+  const payload = { counts, visitors: Array.from(b.visitors) };
+  const task = callBackend(env, 'analytics.ingest', payload, '')
+    .then((res) => { if (!res || !res.ok) console.warn('Analytics batch not stored:', res && res.error && res.error.code); })
+    .catch((err) => console.warn('Analytics batch dropped:', err && err.message));
+  if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(task);
+  return true;
 }
 
 // ---------------------------------------------------------------------------- Backend call

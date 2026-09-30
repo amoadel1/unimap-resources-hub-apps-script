@@ -16,6 +16,7 @@
  *   auth.login      → adminLogin(payload.email, payload.password)
  *   auth.logout     → adminLogout(payload.token)
  *   admin           → adminApi(payload.token, payload.action, payload.payload)
+ *   analytics.ingest → analyticsIngest_(payload)  (anonymous, pre-aggregated counters; see Analytics.gs)
  *                     (adminApi keeps its own session + role + action allow-list checks)
  *
  * Security:
@@ -81,6 +82,8 @@ function apiHandle_(e) {
       return adminApi(p.token, p.action, p.payload);
     case 'health':
       return { ok: true, data: { version: APP.VERSION } };
+    case 'analytics.ingest':
+      return respond_(function () { return analyticsIngest_(p); });
     default:
       return { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown action.' } };
   }

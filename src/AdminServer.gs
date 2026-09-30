@@ -49,6 +49,7 @@ function adminActions_() {
 
     'settings.save':           { role: 'admin', fn: settingsSave_ },
     'activity.list':           { role: 'reviewer', fn: activityList_ },
+    'analytics.summary':       { role: 'admin', fn: function (a, p) { return analyticsSummary_(a, p); } },
     'system.health':           { role: 'owner', fn: function () { return validateStructure_(); } },
     'system.clearCache':       { role: 'owner', fn: function (a) {
       invalidatePublicCache_();

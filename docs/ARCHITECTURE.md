@@ -22,6 +22,7 @@ All `.gs` files share one global scope in Apps Script.
 | `AdminServer.gs` | **The single authorised dispatcher** (`adminDispatch_`), the action allow-list with minimum roles, bootstrap payload |
 | `Code.gs` | `doGet`, template include, public bundle, and the browser-callable functions |
 | `Api.gs` | `doPost` JSON API for the Cloudflare Worker (shared secret, allow-listed actions, hashed client IP). See [CLOUDFLARE.md](CLOUDFLARE.md). |
+| `Analytics.gs` | Anonymous analytics: aggregated daily counters (`analyticsIngest_`), retention, admin summary. See [ANALYTICS.md](ANALYTICS.md). |
 | `Setup.gs` | `setup`, `validateSetup`, `recoverOwnerAccess`, `clearAppCache`, and the owner guard |
 | `Seed.gs` | Import of the previous site's content (`seedInitialData`) |
 | `Migrate.gs` | Import of live Supabase CSV exports (`importFromSupabase`) |

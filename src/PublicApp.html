@@ -115,8 +115,44 @@ window.PublicApp = (function () {
       }
     } catch (e) {}
     render();
+    if (D) trackPage();
     if (!opts.keepScroll) window.scrollTo(0, 0);
     if (opts.focusMain !== false) { var m = $('#main'); if (m) m.focus({ preventScroll: true }); }
+  }
+
+  // ------------------------------------------------------------------ Anonymous analytics
+  // Only the Cloudflare site defines window.URHAnalytics (cloudflare/web/analytics.js); on the
+  // Apps Script site these calls do nothing. No search text or personal data is ever sent.
+  function track(type, data) {
+    try { if (window.URHAnalytics) window.URHAnalytics.track(type, data); } catch (e) {}
+  }
+  function trackPage() {
+    var r = state.route || {};
+    var page = r.p || 'home', id;
+    if (page === 'programme') {
+      var prog = IX && IX.progBySlug[r.s];
+      if (prog) id = prog.id; else page = 'notfound';
+    } else if (page === 'official' && r.c) {
+      page = IX && IX.catBySlug[r.c] ? 'official:' + r.c : 'notfound';
+    } else if (page === 'search' && !String(r.q || state.homeQuery || '').trim()) {
+      page = 'home';
+    }
+    track('pv', id ? { p: page, id: id } : { p: page });
+  }
+  var trackSearch = UI.debounce(function () {
+    var q = String(state.homeQuery || '').trim();
+    if (q.length < 2 || q === lastTrackedQuery) return;
+    lastTrackedQuery = q;
+    track('search', { empty: searchCount(q) === 0 });
+  }, 1500);
+  var lastTrackedQuery = '';
+  function searchCount(q) {
+    var terms = norm(q).split(' ').filter(Boolean);
+    var n = 0;
+    D.programmes.forEach(function (p) { if (matchAll(p._text, terms)) n++; });
+    D.categories.forEach(function (c) { if (matchAll(c._text, terms)) n++; });
+    D.resources.forEach(function (r) { if (matchAll(r._text, terms)) n++; });
+    return n;
   }
 
   // ------------------------------------------------------------------ Layout
@@ -212,7 +248,7 @@ window.PublicApp = (function () {
       </dl>
       ${r.notes ? html`<div><p class="notes" dir="auto">${r.notes}</p>${longNotes ? html`<button type="button" class="btn btn-ghost btn-xs" data-action="notes" style="margin-top:4px;padding-inline:0">${t('show_more_notes')}</button>` : ''}</div>` : ''}
       <div class="actions">
-        <a class="btn btn-primary btn-sm" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${t('open_resource')} ${icon('external', 'icon-sm')}</a>
+        <a class="btn btn-primary btn-sm" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer" data-rid="${r.id}">${t('open_resource')} ${icon('external', 'icon-sm')}</a>
         <button type="button" class="btn btn-secondary btn-icon btn-sm" data-action="copy" data-url="${UI.safeUrl(r.url)}" aria-label="${t('copy_link')}" title="${t('copy_link')}">${icon('copy', 'icon-sm')}</button>
       </div>
     </article>`;
@@ -234,7 +270,7 @@ window.PublicApp = (function () {
   function officialResourceCard(r) {
     var c = IX.catById[r.category_id];
     var type = c ? L(c, 'name') : t('general');
-    return html`<a class="card off-card" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">
+    return html`<a class="card off-card" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer" data-rid="${r.id}">
       <div class="off-top">
         <span class="eyebrow off-type" dir="auto">${type}</span>
         <span class="badge badge-accent">${icon('shield', 'icon-sm')}${t('official_badge')}</span>
@@ -646,6 +682,8 @@ window.PublicApp = (function () {
 
   // ------------------------------------------------------------------ Events (delegated)
   function onClick(e) {
+    var out = e.target.closest('a[data-rid]');
+    if (out) track('click', { id: out.getAttribute('data-rid') });
     var a = e.target.closest('a[data-route]');
     if (a && !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
       e.preventDefault();
@@ -697,6 +735,7 @@ window.PublicApp = (function () {
       state.searchLimit = 60;
       updateHomeBody();
       syncQueryToUrl();
+      trackSearch();
     } else if (e.target.id === 'prog-search') {
       state.filters.q = e.target.value.slice(0, 120);
       updateProgList();
@@ -739,10 +778,13 @@ window.PublicApp = (function () {
         state.route = r;
         state.homeQuery = r.q || '';
         render();
+        if (D) trackPage();
       });
     } catch (e) {}
     render();
+    if (D) trackPage(); else pendingPageView = true;
   }
+  var pendingPageView = false;
 
   /**
    * Replaces the data with a newer bundle (used by the Cloudflare frontend, which first renders a
@@ -759,6 +801,7 @@ window.PublicApp = (function () {
     var y = window.scrollY;
     if (!hadData) setLang(UI.local.get('urh_lang') || D.settings.default_language || 'en', false);
     render();
+    if (!hadData && pendingPageView) { pendingPageView = false; trackPage(); }
     if (hadData) window.scrollTo(0, y);
     if (activeId) {
       var el = document.getElementById(activeId);
