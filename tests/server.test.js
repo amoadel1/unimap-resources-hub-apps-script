@@ -130,12 +130,47 @@ test('seed imports the previous site content with correct programme links', () =
   const env = fresh();
   const res = env.rows('Resources');
   assert.equal(res.filter((r) => !r.is_official).length, 20);
-  assert.equal(res.filter((r) => r.is_official).length, 18);
+  assert.equal(res.filter((r) => r.is_official).length, 21);
   const mech = progId(env, 'bachelor-mechatronic-engineering-with-honours');
   assert.equal(res.filter((r) => r.programme_id === mech).length, 7);
   const ids = res.map((r) => r.id);
   assert.equal(new Set(ids).size, ids.length, 'IDs unique');
   assert.ok(ids.every((id) => /^res_[a-f0-9]{20}$/.test(id)));
+  // 4 collections: 7 + 8 + 2 + 3 links, plus 1 general link (Academic Guide)
+  const cats = env.rows('Categories');
+  assert.deepEqual(JSON.parse(JSON.stringify(cats.map((c) => c.slug))), ['academic-programme', 'academic-courses', 'class-timetable', 'library-digital-services']);
+  const count = (slug) => res.filter((r) => r.is_official && r.category_id === cats.find((c) => c.slug === slug).id).length;
+  assert.deepEqual([count('academic-programme'), count('academic-courses'), count('class-timetable'), count('library-digital-services')], [7, 8, 2, 3]);
+  assert.equal(res.filter((r) => r.is_official && !r.category_id).length, 1);
+  const lib = cats.find((c) => c.slug === 'library-digital-services');
+  assert.equal(lib.name_ar, 'خدمات المكتبة والخدمات الرقمية');
+  const dspace = res.find((r) => r.url === 'https://dspace.unimap.edu.my');
+  assert.ok(dspace && dspace.owner_name === 'Universiti Malaysia Perlis' && dspace.intake === 'Official' && dspace.platform === 'Website');
+});
+
+test('seedLibraryDigitalServices adds only the library collection, idempotently, on a live site', () => {
+  const env = fresh();
+  const t = ownerToken(env);
+  // Simulate the live site before this update: no library collection/links, and an admin deleted a seeded drive.
+  const lib = env.rows('Categories').find((c) => c.slug === 'library-digital-services');
+  for (const r of env.rows('Resources').filter((x) => x.category_id === lib.id)) env.api(t, 'resources.delete', { id: r.id });
+  assert.equal(env.api(t, 'categories.delete', { id: lib.id }).ok, true);
+  const drive = env.rows('Resources').find((r) => !r.is_official);
+  env.api(t, 'resources.delete', { id: drive.id });
+  const before = env.rows('Resources').length;
+  env.m.session.active = 'owner@example.com';
+  env.m.newExecution();
+  const r1 = env.m.context.seedLibraryDigitalServices();
+  env.m.newExecution();
+  const r2 = env.m.context.seedLibraryDigitalServices();
+  env.m.session.active = '';
+  assert.deepEqual([r1.categories, r1.official, r1.resources, r1.programmes], [1, 3, 0, 0]);
+  assert.deepEqual([r2.categories, r2.official], [0, 0], 'second run adds nothing');
+  const res = env.rows('Resources');
+  assert.equal(res.length, before + 3);
+  assert.ok(!res.some((r) => r.id === drive.id || r.url_key === drive.url_key), 'a deleted drive is NOT brought back');
+  assert.equal(env.rows('Categories').filter((c) => c.slug === 'library-digital-services').length, 1);
+  assert.equal(res.filter((r) => r.is_official).length, 21);
 });
 
 // ============================================================================ Public data

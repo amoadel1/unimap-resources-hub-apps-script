@@ -93,7 +93,7 @@ test('public site loads through Cloudflare and never contacts Google from the br
   await page.waitForSelector('.prog-card');
   assert.equal(await page.textContent('h1'), 'UniMAP Resources Hub');
   assert.equal(await page.locator('.prog-card').count(), 8);
-  assert.equal(await page.locator('.coll-card').count(), 3);
+  assert.equal(await page.locator('.coll-card').count(), 4);
   assert.match(await page.textContent('.site-footer'), /not an official UniMAP system/i);
   assert.equal(await page.getAttribute('.site-footer a[href="/admin"]', 'href'), '/admin');
   await page.reload();
@@ -138,8 +138,15 @@ test('search, programme pages, official collections and deep links work', async 
   await page.goBack();
   await page.waitForSelector('.prog-card');
   await page.goto(BASE + '/?p=official&c=academic-courses');
-  await page.waitForSelector('.link-row');
-  assert.equal(await page.locator('.link-row').count(), 8);
+  await page.waitForSelector('.off-card');
+  assert.equal(await page.locator('.off-card').count(), 8);
+  assert.equal(await page.locator('.link-row').count(), 0, 'old list rows are gone');
+  assert.ok(!/https?:\/\//.test(await page.textContent('.off-grid')), 'raw URLs are never shown');
+  await page.goto(BASE + '/?p=official&c=library-digital-services');
+  await page.waitForSelector('.off-card');
+  assert.equal(await page.locator('.off-card').count(), 3);
+  assert.match(await page.textContent('.off-grid'), /DSpace/);
+  assert.match(await page.textContent('.off-card .off-type'), /Library & Digital Services/);
   assert.match(await page.textContent('main'), /independent student initiative/);
   await page.goto(BASE + '/?p=programme&s=nope');
   await page.waitForSelector('main');

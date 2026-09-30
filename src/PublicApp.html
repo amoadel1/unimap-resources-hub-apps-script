@@ -227,11 +227,30 @@ window.PublicApp = (function () {
       <span class="meta"><span>${n ? countLabel(n) : t('no_resources_yet')}</span>${icon('arrow', 'go icon-sm')}</span>`, 'card prog-card');
   }
 
-  function linkRow(r) {
-    return html`<a class="link-row" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">
-      <span class="t"><span dir="auto" style="display:block">${r.title}</span>${r.notes ? html`<span class="n" dir="auto" style="display:block">${r.notes}</span>` : ''}</span>
-      ${icon('external', 'icon-sm')}
+  /**
+   * One card for every official link (general links and every collection).
+   * The whole card is the link; the raw URL is never shown.
+   */
+  function officialResourceCard(r) {
+    var c = IX.catById[r.category_id];
+    var type = c ? L(c, 'name') : t('general');
+    return html`<a class="card off-card" href="${UI.safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">
+      <div class="off-top">
+        <span class="eyebrow off-type" dir="auto">${type}</span>
+        <span class="badge badge-accent">${icon('shield', 'icon-sm')}${t('official_badge')}</span>
+      </div>
+      <div class="off-body">
+        <h3 class="off-title break" dir="auto">${r.title}</h3>
+        ${r.notes ? html`<p class="off-desc" dir="auto">${r.notes}</p>` : ''}
+      </div>
+      <div class="off-foot">
+        <span class="latin">${r.platform || 'Website'}</span>
+        <span class="off-go">${t('open_resource')} ${icon('external', 'icon-sm')}</span>
+      </div>
     </a>`;
+  }
+  function officialGrid(list) {
+    return html`<div class="grid grid-3 off-grid">${list.map(officialResourceCard)}</div>`;
   }
 
   function collectionCard(c) {
@@ -386,12 +405,8 @@ window.PublicApp = (function () {
             ${D.categories.map(collectionCard)}
           </div>
           ${IX.general.length ? html`
-            <div
-              class="card list-card"
-              style="margin-top:14px"
-            >
-              ${IX.general.map(linkRow)}
-            </div>
+            <h3 class="off-sub">${t('general')}</h3>
+            ${officialGrid(IX.general)}
           ` : ''}
           <div class="notice" style="margin-top:14px">
             ${icon('shield')}
@@ -436,7 +451,7 @@ window.PublicApp = (function () {
       ${cats.length ? html`<div class="search-group"><h3>${icon('layers', 'icon-sm')}${t('official_title')} <span class="subtle">${cats.length}</span></h3>
         <div class="grid grid-3">${cats.map(collectionCard)}</div></div>` : ''}
       ${res.length ? html`<div class="search-group"><h3>${icon('folder', 'icon-sm')}${t('resources')} <span class="subtle">${res.length}</span></h3>
-        <div class="grid grid-3">${shown.map(function (r) { return resourceCard(r, { q: q }); })}</div>
+        <div class="grid grid-3">${shown.map(function (r) { return r.is_official ? officialResourceCard(r) : resourceCard(r, { q: q }); })}</div>
         ${res.length > shown.length ? html`<div style="text-align:center;margin-top:20px"><button type="button" class="btn btn-secondary" data-action="more-results">${t('show_more')} (${res.length - shown.length})</button></div>` : ''}
       </div>` : ''}
     </section>`;
@@ -526,7 +541,7 @@ window.PublicApp = (function () {
           ${desc ? html`<p class="lead" dir="auto">${desc}</p>` : ''}
         </section>
         <section class="container" style="padding-block:24px 64px">
-          ${list.length ? html`<div class="card list-card">${list.map(linkRow)}</div>` : html`<div class="card empty"><h3>${t('no_resources_yet')}</h3></div>`}
+          ${list.length ? officialGrid(list) : html`<div class="card empty"><h3>${t('no_resources_yet')}</h3></div>`}
           <div class="notice" style="margin-top:16px">${icon('shield')}<span>${t('official_note')}</span></div>
         </section>`;
     }
@@ -539,7 +554,7 @@ window.PublicApp = (function () {
       </section>
       <section class="container" style="padding-block:24px 64px">
         <div class="grid grid-3">${D.categories.map(collectionCard)}</div>
-        ${IX.general.length ? html`<h2 style="font-size:1.125rem;margin:32px 0 12px">${t('general')}</h2><div class="card list-card">${IX.general.map(linkRow)}</div>` : ''}
+        ${IX.general.length ? html`<h2 class="off-sub">${t('general')}</h2>${officialGrid(IX.general)}` : ''}
         <div class="notice" style="margin-top:16px">${icon('shield')}<span>${t('official_note')}</span></div>
       </section>`;
   }

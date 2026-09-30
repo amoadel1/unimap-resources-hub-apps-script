@@ -61,7 +61,7 @@ test('homepage renders from embedded data with zero server calls', async () => {
   assert.equal(await page.textContent('h1'), 'UniMAP Resources Hub');
   assert.equal(await page.evaluate(() => window.__rpcCount || 0), 0);
   assert.equal(await page.locator('.prog-card').count(), 8);
-  assert.equal(await page.locator('.coll-card').count(), 3);
+  assert.equal(await page.locator('.coll-card').count(), 4);
   assert.match(await page.textContent('.site-footer'), /independent student initiative/i);
   assert.match(await page.textContent('#official'), /not an official UniMAP system/i);
   assert.deepEqual(errors, []);
@@ -116,8 +116,46 @@ test('programme page: navigation, filters, safe external links, deep link', asyn
 
 test('official collections show links and the independence notice', async () => {
   const { ctx, page } = await open(DESKTOP, '?p=official&c=academic-programme');
-  assert.equal(await page.locator('.link-row').count(), 7);
+  assert.equal(await page.locator('.off-card').count(), 7);
   assert.match(await page.textContent('main'), /independent student initiative/);
+  // Every card: category label, Official badge, title, description, platform; whole card is the link.
+  const card = page.locator('.off-card').first();
+  assert.equal(await card.getAttribute('target'), '_blank');
+  assert.match(await card.getAttribute('rel'), /noopener/);
+  assert.match(await card.locator('.off-type').textContent(), /Academic Programme/);
+  assert.match(await card.locator('.badge').textContent(), /Official/);
+  assert.match(await card.locator('.off-foot').textContent(), /Website/);
+  assert.ok(!/https?:\/\//.test(await page.textContent('.off-grid')), 'no raw URLs');
+  // Official index: 4 collections, and the Academic Guide is a normal card (not full width).
+  await page.goto(page.url().split('?')[0] + '?p=official');
+  await page.waitForSelector('.coll-card');
+  assert.equal(await page.locator('.coll-card').count(), 4);
+  const guide = page.locator('.off-card', { hasText: 'UniMAP Academic Guide' });
+  assert.equal(await guide.count(), 1);
+  const gw = (await guide.boundingBox()).width, cw = (await page.locator('.coll-card').first().boundingBox()).width;
+  assert.ok(Math.abs(gw - cw) < 2, 'guide card has the same width as the collection cards (' + gw + ' vs ' + cw + ')');
+  // Tablet: 2 columns, phone: 1 column, no horizontal scroll.
+  for (const [w, cols] of [[820, 2], [375, 1]]) {
+    await page.setViewportSize({ width: w, height: 900 });
+    await page.goto(page.url().split('?')[0] + '?p=official&c=academic-courses');
+    await page.waitForSelector('.off-card');
+    const xs = new Set(await page.locator('.off-card').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left))));
+    assert.equal(xs.size, cols, w + 'px → ' + cols + ' column(s)');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
+  }
+  // Equal height per row on desktop.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(page.url().split('?')[0] + '?p=official&c=academic-courses');
+  await page.waitForSelector('.off-card');
+  const boxes = await page.locator('.off-card').evaluateAll((els) => els.map((e) => { const b = e.getBoundingClientRect(); return [Math.round(b.top), Math.round(b.height)]; }));
+  const rows = {}; boxes.forEach(([top, h]) => { (rows[top] = rows[top] || []).push(h); });
+  Object.values(rows).forEach((hs) => assert.equal(new Set(hs).size, 1, 'equal heights in a row: ' + hs));
+  // Search finds the library links.
+  for (const q of ['EZproxy', 'Library', 'DSpace', 'Repository', 'Room Reservation', 'Digital Repository']) {
+    await page.goto(page.url().split('?')[0] + '?p=search&q=' + encodeURIComponent(q));
+    await page.waitForSelector('.off-card');
+    assert.ok(await page.locator('.off-card').count() >= 1, 'search: ' + q);
+  }
   await ctx.close();
 });
 

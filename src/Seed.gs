@@ -46,7 +46,8 @@ var SEED_RESOURCES_ = [
 var SEED_CATEGORIES_ = [
   ['academic-programme', 'Academic Programme', 'البرامج الأكاديمية', 'Official programme structures for each UniMAP faculty.', 'هياكل البرامج الرسمية لكل كلية في UniMAP.'],
   ['academic-courses', 'Academic Courses', 'المواد الأكاديمية', 'Official course lists published by each faculty.', 'قوائم المواد الرسمية التي تنشرها كل كلية.'],
-  ['class-timetable', 'Class Timetable', 'الجدول الدراسي', 'Official class timetables for bachelor and diploma programmes.', 'الجداول الدراسية الرسمية لبرامج البكالوريوس والدبلوم.']
+  ['class-timetable', 'Class Timetable', 'الجدول الدراسي', 'Official class timetables for bachelor and diploma programmes.', 'الجداول الدراسية الرسمية لبرامج البكالوريوس والدبلوم.'],
+  ['library-digital-services', 'Library & Digital Services', 'خدمات المكتبة والخدمات الرقمية', 'Official UniMAP library and digital services for students.', 'خدمات المكتبة والخدمات الرقمية الرسمية في UniMAP للطلاب.']
 ];
 
 var UNIMAP_SITE_ = 'https://sites.google.com/unimap.edu.my/academicunimap/';
@@ -70,7 +71,10 @@ var SEED_OFFICIAL_ = [
   ['academic-courses', 'Faculty of Intelligent Computing (FIC)', UNIMAP_SITE_ + 'academic-courses/coursesfic/fic-courses-sa-20252026', 'Official course list.'],
   ['academic-courses', 'Co-Curriculum Centre', UNIMAP_SITE_ + 'academic-courses/coursesko-k', 'Official course list.'],
   ['class-timetable', 'Bachelor Degree Programmes', UNIMAP_SITE_ + 'class-timetable#h.8g9x2dbv72qb', 'Official class timetable.'],
-  ['class-timetable', 'Diploma Programmes', UNIMAP_SITE_ + 'class-timetable#h.o40f0qm8u0cu', 'Official class timetable.']
+  ['class-timetable', 'Diploma Programmes', UNIMAP_SITE_ + 'class-timetable#h.o40f0qm8u0cu', 'Official class timetable.'],
+  ['library-digital-services', 'UniMAP Library – EZproxy', 'https://libguides.unimap.edu.my/ezproxyhosted', 'Access UniMAP Library subscribed electronic resources and online databases through EZproxy.'],
+  ['library-digital-services', 'UniMAP Library Digital Repository (DSpace)', 'https://dspace.unimap.edu.my', 'Search and access UniMAP scholarly materials, research outputs, theses, articles, and other digital academic collections.'],
+  ['library-digital-services', 'UniMAP Library – Room Reservation', 'https://unimap.libcal.com/reserve', 'Reserve available library rooms and study spaces through the UniMAP Library reservation service.']
 ];
 
 function seedInitialData() {
@@ -80,7 +84,25 @@ function seedInitialData() {
   return result;
 }
 
-function seedInitialData_(actor) {
+/**
+ * Adds ONLY the "Library & Digital Services" collection and its 3 official links.
+ * Safe for a live site: unlike seedInitialData(), it never re-adds programmes, drives
+ * or links that an admin has deliberately deleted. Idempotent (no duplicates).
+ */
+function seedLibraryDigitalServices() {
+  var email = assertEditor_();
+  var result = seedInitialData_({ email: email }, { onlyCategories: ['library-digital-services'] });
+  Logger.log('Library & Digital Services seed complete: ' + JSON.stringify(result));
+  return result;
+}
+
+/**
+ * opts.onlyCategories (optional): seed just these official collections and their links;
+ * programmes and student drives are skipped. Without it, everything is seeded.
+ */
+function seedInitialData_(actor, opts) {
+  var only = opts && opts.onlyCategories ? opts.onlyCategories : null;
+  var wanted = function (slug) { return !only || only.indexOf(slug) !== -1; };
   return withLock_(function () {
     var now = nowIso_();
     var result = { programmes: 0, categories: 0, resources: 0, official: 0, skipped: 0 };
@@ -91,6 +113,7 @@ function seedInitialData_(actor) {
     var sort = nextSortOrder_('Programmes');
     var newProgs = [];
     SEED_PROGRAMMES_.forEach(function (row) {
+      if (only) return;
       if (progBySlug[row[0]]) { result.skipped++; return; }
       var p = {
         id: newId_(SCHEMA.Programmes.prefix), slug: row[0], code: '', name: row[1], name_ar: row[2],
@@ -110,6 +133,7 @@ function seedInitialData_(actor) {
     var csort = nextSortOrder_('Categories');
     var newCats = [];
     SEED_CATEGORIES_.forEach(function (row) {
+      if (!wanted(row[0])) return;
       if (catBySlug[row[0]]) { result.skipped++; return; }
       var c = {
         id: newId_(SCHEMA.Categories.prefix), slug: row[0], name: row[1], name_ar: row[2],
@@ -131,6 +155,7 @@ function seedInitialData_(actor) {
     var newRes = [];
     var rsort = 10;
     SEED_RESOURCES_.forEach(function (row) {
+      if (only) return;
       var prog = progBySlug[row[0]];
       if (!prog) { result.skipped++; return; }
       var u = validateUrl_(row[5]);
@@ -146,7 +171,9 @@ function seedInitialData_(actor) {
       result.resources++;
     });
     SEED_OFFICIAL_.forEach(function (row) {
+      if (only && !(row[0] && wanted(row[0]))) return;
       var cat = row[0] ? catBySlug[row[0]] : null;
+      if (row[0] && !cat) { result.skipped++; return; } // collection missing: never create an uncategorised copy
       var catId = cat ? cat.id : '';
       var u = validateUrl_(row[2]);
       var k = u.key + '|o:' + catId;
